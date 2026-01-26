@@ -1,0 +1,166 @@
+from flask import request, jsonify, current_app
+from flask_jwt_extended import create_access_token, create_refresh_token, jwt_required, get_jwt_identity
+from email_validator import validate_email, EmailNotValidError
+from pymongo.errors import DuplicateKeyError
+from app.auth import bp
+from app import get_models
+
+@bp.route('/signup', methods=['POST'])
+def signup():
+    """User registration endpoint"""
+    try:
+        data = request.get_json()
+        models = get_models()
+        user_model = models['user']
+
+        # Validate required fields
+        required_fields = ['name', 'email', 'password', 'role']
+        for field in required_fields:
+            if not data.get(field):
+                return jsonify({'message': f'{field.capitalize()} is required'}), 400
+
+        name = data['name'].strip()
+        email = data['email'].strip().lower()
+        password = data['password']
+        role = data['role'].strip().lower()
+
+        # Validate email format
+        try:
+            validate_email(email)
+        except EmailNotValidError:
+            return jsonify({'message': 'Invalid email format'}), 400
+
+        # Only allow teacher role for public signup
+        if role != 'teacher':
+            return jsonify({'message': 'Only teacher accounts can be created through signup. Admin accounts must be created by system administrators.'}), 400
+
+        # Validate password length
+        if len(password) < 6:
+            return jsonify({'message': 'Password must be at least 6 characters long'}), 400
+
+        # Check if user already exists
+        existing_user = user_model.find_by_email(email)
+        if existing_user:
+            return jsonify({'message': 'Email already registered'}), 409
+
+        # Create new user
+        try:
+            user = user_model.create_user(name, email, password, role)
+        except DuplicateKeyError:
+            return jsonify({'message': 'Email already registered'}), 409
+
+        # Create access token
+        access_token = create_access_token(identity=user['id'])
+        refresh_token = create_refresh_token(identity=user['id'])
+
+        return jsonify({
+            'message': 'User created successfully',
+            'access_token': access_token,
+            'refresh_token': refresh_token,
+            'user': user
+        }), 201
+
+    except Exception as e:
+        current_app.logger.error(f"Signup error: {str(e)}")
+        return jsonify({'message': 'Internal server error'}), 500
+
+@bp.route('/login', methods=['POST'])
+def login():
+    """User login endpoint"""
+    try:
+        data = request.get_json()
+        models = get_models()
+        user_model = models['user']
+
+        # Validate required fields
+        if not data.get('email') or not data.get('password'):
+            return jsonify({'message': 'Email and password are required'}), 400
+
+        email = data['email'].strip().lower()
+        password = data['password']
+
+        # Find user by email
+        user = user_model.find_by_email(email)
+
+        if not user or not user_model.check_password(password, user['password_hash']):
+            return jsonify({'message': 'Invalid email or password'}), 401
+
+        if not user.get('is_active', True):
+            return jsonify({'message': 'Account is deactivated'}), 401
+
+        # Create access token
+        access_token = create_access_token(identity=user['id'])
+        refresh_token = create_refresh_token(identity=user['id'])
+
+        # Remove password hash from user data
+        user_data = {k: v for k, v in user.items() if k != 'password_hash'}
+
+        return jsonify({
+            'message': 'Login successful',
+            'access_token': access_token,
+            'refresh_token': refresh_token,
+            'user': user_data
+        }), 200
+
+    except Exception as e:
+        current_app.logger.error(f"Login error: {str(e)}")
+        return jsonify({'message': 'Internal server error'}), 500
+
+@bp.route('/refresh', methods=['POST'])
+@jwt_required(refresh=True)
+def refresh():
+    """Refresh access token endpoint"""
+    try:
+        current_user_id = get_jwt_identity()
+        models = get_models()
+        user_model = models['user']
+
+        user = user_model.find_by_id(current_user_id)
+
+        if not user or not user.get('is_active', True):
+            return jsonify({'message': 'User not found or inactive'}), 404
+
+        new_token = create_access_token(identity=current_user_id)
+
+        # Remove password hash from user data
+        user_data = {k: v for k, v in user.items() if k != 'password_hash'}
+
+        return jsonify({
+            'access_token': new_token,
+            'user': user_data
+        }), 200
+
+    except Exception as e:
+        current_app.logger.error(f"Token refresh error: {str(e)}")
+        return jsonify({'message': 'Internal server error'}), 500
+
+@bp.route('/me', methods=['GET'])
+@jwt_required()
+def get_current_user():
+    """Get current user information"""
+    try:
+        current_user_id = get_jwt_identity()
+        models = get_models()
+        user_model = models['user']
+
+        user = user_model.find_by_id(current_user_id)
+
+        if not user:
+            return jsonify({'message': 'User not found'}), 404
+
+        # Remove password hash from user data
+        user_data = {k: v for k, v in user.items() if k != 'password_hash'}
+
+        return jsonify({
+            'user': user_data
+        }), 200
+
+    except Exception as e:
+        current_app.logger.error(f"Get current user error: {str(e)}")
+        return jsonify({'message': 'Internal server error'}), 500
+
+@bp.route('/logout', methods=['POST'])
+@jwt_required()
+def logout():
+    """User logout endpoint (client-side token removal)"""
+    return jsonify({'message': 'Logout successful'}), 200
