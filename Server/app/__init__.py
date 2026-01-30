@@ -2,12 +2,15 @@ from flask import Flask, g
 from flask_jwt_extended import JWTManager
 from flask_bcrypt import Bcrypt
 from flask_cors import CORS
+from flask_socketio import SocketIO
 from pymongo import MongoClient
 from config import config
 
 # Initialize extensions
 jwt = JWTManager()
 bcrypt = Bcrypt()
+# threading mode so emit() from subprocess reader thread reaches clients reliably
+socketio = SocketIO(app=None, cors_allowed_origins="*", max_http_buffer_size=10_000_000, async_mode="threading")
 
 def create_app(config_name='default'):
     app = Flask(__name__)
@@ -16,6 +19,7 @@ def create_app(config_name='default'):
     # Initialize extensions with app
     jwt.init_app(app)
     bcrypt.init_app(app)
+    socketio.init_app(app)
 
     # Configure CORS (allow frontend URLs for dev)
     CORS(app, origins=[
@@ -74,6 +78,9 @@ def create_app(config_name='default'):
 
     from app.admin import bp as admin_bp
     app.register_blueprint(admin_bp, url_prefix='/api/admin')
+    
+    from app.monitoring import bp as monitoring_bp
+    app.register_blueprint(monitoring_bp, url_prefix='/api/monitoring')
 
     # Initialize models
     print("📊 Initializing MongoDB models...")

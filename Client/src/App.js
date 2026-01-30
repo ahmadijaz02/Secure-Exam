@@ -21,6 +21,7 @@ import AdminExamSessions from './pages/admin/AdminExamSessions';
 
 // Teacher Pages
 import TeacherDashboard from './pages/teacher/TeacherDashboard';
+import ExamMonitoring from './pages/teacher/ExamMonitoring';
 
 // Route Guards
 import { AdminRoute, TeacherRoute } from './components/guards/RoleBasedRoute';
@@ -122,14 +123,14 @@ function App() {
                   </TeacherLayout>
                 </TeacherRoute>
               } />
+              <Route path="/teacher/monitoring/:examSessionId" element={
+                <TeacherRoute>
+                  <TeacherLayout><ExamMonitoring /></TeacherLayout>
+                </TeacherRoute>
+              } />
               <Route path="/teacher/monitoring" element={
                 <TeacherRoute>
-                  <TeacherLayout>
-                    <div className="space-y-6">
-                      <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Live Monitoring</h1>
-                      <p className="text-gray-600 dark:text-gray-400">Monitor students in real-time with AI-powered behavior analysis</p>
-                    </div>
-                  </TeacherLayout>
+                  <TeacherLayout><ExamMonitoring /></TeacherLayout>
                 </TeacherRoute>
               } />
               <Route path="/teacher/alerts" element={

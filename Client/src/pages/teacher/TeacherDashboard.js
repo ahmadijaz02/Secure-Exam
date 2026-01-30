@@ -1,14 +1,22 @@
 import React from 'react';
+import { useNavigate } from 'react-router-dom';
 import Card from '../../components/ui/Card';
 import Button from '../../components/ui/Button';
 
 function TeacherDashboard() {
+  const navigate = useNavigate();
+  
   const stats = [
     { label: 'Active Sessions', value: '3', icon: '🔴' },
     { label: 'Students Monitored', value: '87', icon: '👥' },
     { label: 'Alerts Today', value: '12', icon: '🚨' },
     { label: 'Incidents Logged', value: '8', icon: '📝' },
   ];
+
+  const handleStartMonitoring = () => {
+    // Navigate to monitoring page with a test session ID
+    navigate('/teacher/monitoring/test-session');
+  };
 
   return (
     <div className="space-y-8">
@@ -44,7 +52,11 @@ function TeacherDashboard() {
             <div className="text-center">
               <p className="text-gray-500 dark:text-gray-400 text-lg">Live camera feed will be displayed here</p>
               <p className="text-gray-400 dark:text-gray-500 text-sm mt-2">Start an exam session to begin monitoring</p>
-              <Button variant="primary" className="mt-4">
+              <Button 
+                variant="primary" 
+                className="mt-4"
+                onClick={handleStartMonitoring}
+              >
                 Start Monitoring
               </Button>
             </div>
