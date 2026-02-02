@@ -84,7 +84,7 @@ def create_app(config_name='default'):
 
     # Initialize models
     print("📊 Initializing MongoDB models...")
-    from app.models import User, ExamSession, Incident
+    from app.models import User, ExamSession, Incident, SeatingPlan
 
     app.user_model = User(app.db)
     print("   ✓ User model initialized")
@@ -94,6 +94,9 @@ def create_app(config_name='default'):
 
     app.incident_model = Incident(app.db)
     print("   ✓ Incident model initialized")
+    
+    app.seating_plan_model = SeatingPlan(app.db)
+    print("   ✓ SeatingPlan model initialized")
 
     print("🎯 All models ready for use!")
 
@@ -110,5 +113,6 @@ def get_models():
     return {
         'user': current_app.user_model,
         'exam_session': current_app.exam_session_model,
-        'incident': current_app.incident_model
+        'incident': current_app.incident_model,
+        'seating_plan': current_app.seating_plan_model
     }

@@ -61,9 +61,9 @@ def emit(msg):
 def emit_frame(img):
     """Emit frame as base64 for web streaming"""
     try:
-        # Resize frame for faster transmission
-        small_img = cv2.resize(img, (320, 180))
-        _, buffer = cv2.imencode('.jpg', small_img, [cv2.IMWRITE_JPEG_QUALITY, 50])
+        # Resize frame for larger, clearer transmission
+        small_img = cv2.resize(img, (640, 360))
+        _, buffer = cv2.imencode('.jpg', small_img, [cv2.IMWRITE_JPEG_QUALITY, 35])
         jpg_as_text = base64.b64encode(buffer).decode()
         print(f"FRAME:{jpg_as_text}")
         sys.stdout.flush()
@@ -266,7 +266,7 @@ def run_system():
         
         # Emit frame for web streaming and remove separate window
         emit_frame(img)
-        time.sleep(0.1)  # Reduce frame rate to ~10 FPS for web streaming
+        time.sleep(0.02)  # ~50 FPS for much smoother streaming
         
         # Optional: Keep window for debugging (remove if not needed)
         # cv2.imshow("Exam Monitor Camera", img)

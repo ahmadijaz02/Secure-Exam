@@ -13,7 +13,6 @@ function AdminLayout({ children }) {
     { label: 'Dashboard', path: '/admin/dashboard', icon: '📊' },
     { label: 'Exam Sessions', path: '/admin/exam-sessions', icon: '📋' },
     { label: 'Seating Plans', path: '/admin/seating-plans', icon: '🗺️' },
-    { label: 'Invigilators', path: '/admin/invigilators', icon: '👥' },
     { label: 'Users', path: '/admin/users', icon: '👤' },
     { label: 'Reports', path: '/admin/reports', icon: '📈' },
     { label: 'Settings', path: '/admin/settings', icon: '⚙️' },

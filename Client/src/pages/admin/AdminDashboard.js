@@ -1,25 +1,58 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
+import { useNavigate } from 'react-router-dom';
 import Card from '../../components/ui/Card';
 import Button from '../../components/ui/Button';
+import LoadingSpinner from '../../components/ui/LoadingSpinner';
+import adminService from '../../api/services/adminService';
+import { useNotification } from '../../context/notification/NotificationContext';
 
 function AdminDashboard() {
-  const stats = [
-    { label: 'Total Exam Sessions', value: '24', icon: '📋' },
-    { label: 'Active Invigilators', value: '12', icon: '👥' },
-    { label: 'Classrooms', value: '8', icon: '🏫' },
-    { label: 'Total Incidents', value: '156', icon: '⚠️' },
+  const navigate = useNavigate();
+  const { addNotification } = useNotification();
+  const [stats, setStats] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetchDashboardStats();
+  }, []);
+
+  const fetchDashboardStats = async () => {
+    try {
+      setLoading(true);
+      const data = await adminService.getDashboardStats();
+      setStats(data.stats);
+    } catch (error) {
+      addNotification('error', error.response?.data?.message || 'Failed to load dashboard stats');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="flex justify-center items-center h-64">
+        <LoadingSpinner />
+      </div>
+    );
+  }
+
+  const dashboardStats = [
+    { label: 'Total Exam Sessions', value: stats?.total_sessions || 0, icon: '📋' },
+    { label: 'Active Teachers', value: stats?.total_teachers || 0, icon: '👨‍🏫' },
+    { label: 'Classrooms', value: stats?.total_classrooms || 0, icon: '🏫' },
+    { label: 'Total Incidents', value: stats?.total_incidents || 0, icon: '⚠️' },
   ];
 
   return (
     <div className="space-y-8">
       <div>
         <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Admin Dashboard</h1>
-        <p className="mt-2 text-gray-600 dark:text-gray-400">Manage exam sessions, invigilators, and system configuration</p>
+        <p className="mt-2 text-gray-600 dark:text-gray-400">Manage exam sessions, teachers, and system configuration</p>
       </div>
 
       {/* Statistics Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        {stats.map((stat, index) => (
+        {dashboardStats.map((stat, index) => (
           <Card key={index}>
             <Card.Content className="p-6">
               <div className="flex items-center justify-between">
@@ -41,16 +74,16 @@ function AdminDashboard() {
         </Card.Header>
         <Card.Content className="p-6">
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            <Button variant="primary" className="w-full">
+            <Button variant="primary" className="w-full" onClick={() => navigate('/admin/exam-sessions')}>
               Create Exam Session
             </Button>
-            <Button variant="secondary" className="w-full">
-              Add Invigilator
+            <Button variant="secondary" className="w-full" onClick={() => navigate('/admin/users')}>
+              Manage Users
             </Button>
-            <Button variant="secondary" className="w-full">
+            <Button variant="secondary" className="w-full" onClick={() => navigate('/admin/seating-plans')}>
               Configure Seating Plan
             </Button>
-            <Button variant="secondary" className="w-full">
+            <Button variant="secondary" className="w-full" onClick={() => navigate('/admin/reports')}>
               Generate Report
             </Button>
           </div>

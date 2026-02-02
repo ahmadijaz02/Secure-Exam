@@ -18,6 +18,8 @@ import NotFoundPage from './pages/error/NotFoundPage';
 // Admin Pages
 import AdminDashboard from './pages/admin/AdminDashboard';
 import AdminExamSessions from './pages/admin/AdminExamSessions';
+import AdminSeatingPlans from './pages/admin/AdminSeatingPlans';
+import AdminUsers from './pages/admin/AdminUsers';
 
 // Teacher Pages
 import TeacherDashboard from './pages/teacher/TeacherDashboard';
@@ -58,32 +60,12 @@ function App() {
               } />
               <Route path="/admin/seating-plans" element={
                 <AdminRoute>
-                  <AdminLayout>
-                    <div className="space-y-6">
-                      <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Seating Plans</h1>
-                      <p className="text-gray-600 dark:text-gray-400">Configure classroom seating plans</p>
-                    </div>
-                  </AdminLayout>
-                </AdminRoute>
-              } />
-              <Route path="/admin/invigilators" element={
-                <AdminRoute>
-                  <AdminLayout>
-                    <div className="space-y-6">
-                      <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Invigilators</h1>
-                      <p className="text-gray-600 dark:text-gray-400">Manage invigilators and assign them to exam sessions</p>
-                    </div>
-                  </AdminLayout>
+                  <AdminLayout><AdminSeatingPlans /></AdminLayout>
                 </AdminRoute>
               } />
               <Route path="/admin/users" element={
                 <AdminRoute>
-                  <AdminLayout>
-                    <div className="space-y-6">
-                      <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Users</h1>
-                      <p className="text-gray-600 dark:text-gray-400">Manage system users and permissions</p>
-                    </div>
-                  </AdminLayout>
+                  <AdminLayout><AdminUsers /></AdminLayout>
                 </AdminRoute>
               } />
               <Route path="/admin/reports" element={

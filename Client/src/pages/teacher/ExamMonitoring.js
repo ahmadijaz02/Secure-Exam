@@ -210,7 +210,8 @@ const ExamMonitoring = () => {
                       ref={videoImgRef}
                       src={`data:image/jpeg;base64,${frameData}`}
                       alt="Live feed"
-                      className="w-full h-full object-contain max-h-[500px]"
+                      className="w-full h-full object-cover min-h-[360px] min-w-[640px] max-h-[600px] max-w-full rounded-lg"
+                      style={{ background: '#222' }}
                     />
                     <div className="absolute top-2 left-2 px-2 py-1 bg-green-500/90 text-white text-xs font-semibold rounded-full flex items-center gap-1">
                       <div className="w-2 h-2 bg-white rounded-full animate-pulse" />
@@ -254,6 +255,9 @@ const ExamMonitoring = () => {
                           <div>
                             <p className="font-semibold">{formatAlertReason(alert.reason)}</p>
                             <p className="text-sm opacity-75 mt-1">{new Date(alert.alert_time).toLocaleString()}</p>
+                            <span className="inline-block text-xs mt-1 px-2 py-1 rounded bg-slate-200 dark:bg-slate-700 font-bold text-slate-700 dark:text-slate-200">
+                              Level {alert.warning_level || (['PHONE_DETECTED','PAPER_PASSING'].includes(alert.reason) ? 2 : 1)}
+                            </span>
                           </div>
                           <span className="text-xs uppercase font-bold px-2 py-1 rounded">{severity}</span>
                         </div>
