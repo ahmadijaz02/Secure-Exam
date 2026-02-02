@@ -96,16 +96,67 @@ def process_monitor_output(process, socketio_instance, app):
                     timestamp = parts[2] if len(parts) > 2 else ""
                     filename = parts[3] if len(parts) > 3 else None
                     print(f"[Monitor] Alert: {reason}")
+                    # Determine warning level and type
+                    behavior_types = ['HEAD_LEFT', 'HEAD_RIGHT', 'HAND_MOUTH', 'WATCH_DETECTED']
+                    object_types = ['PHONE_DETECTED', 'PAPER_PASSING']
+                    if reason in object_types:
+                        warning_level = 2
+                        send_email = True
+                    else:
+                        warning_level = 1
+                        send_email = False
+                    # Save to DB
                     with app.app_context():
                         try:
+                            # Save incident to DB
+                            incident_model = app.incident_model
+                            # Try to get exam_session_id from global, request, or context (customize as needed)
+                            exam_session_id = getattr(app, 'current_exam_session_id', None)
+                            incident = incident_model.create_incident(
+                                exam_session_id=exam_session_id,
+                                incident_type=reason,
+                                description=f"Auto-detected: {reason}",
+                                image_url=filename,
+                                confidence_score=None
+                            )
+                            # Emit to dashboard
                             socketio_instance.emit('log', line, namespace='/')
                             socketio_instance.emit('monitoring_alert', {
                                 'reason': reason,
                                 'timestamp': timestamp,
                                 'alert_time': datetime.now().isoformat(),
                                 'filename': filename,
-                                'severity': get_severity(reason)
+                                'severity': get_severity(reason),
+                                'warning_level': warning_level
                             }, namespace='/monitoring')
+                            # Send email for object detection only
+                            if send_email:
+                                try:
+                                    print(f"[DEBUG] Level 2 alert: exam_session_id = {exam_session_id}")
+                                    session_model = app.exam_session_model
+                                    user_model = app.user_model
+                                    session = session_model.find_by_id(exam_session_id) if exam_session_id else None
+                                    print(f"[DEBUG] Session lookup result: {session}")
+                                    teacher_email = None
+                                    if session and 'teacher_id' in session:
+                                        print(f"[DEBUG] Found teacher_id: {session['teacher_id']}")
+                                        teacher = user_model.find_by_id(session['teacher_id'])
+                                        print(f"[DEBUG] Teacher lookup result: {teacher}")
+                                        if teacher and 'email' in teacher:
+                                            teacher_email = teacher['email']
+                                    if teacher_email:
+                                        print(f"[DEBUG] Sending email to {teacher_email} for Level 2 warning: {reason}")
+                                        from app.utils.helpers import send_email_alert
+                                        send_email_alert(
+                                            subject=f"Exam Alert: {reason}",
+                                            body=f"Level 2 Warning: {reason} detected at {timestamp}. See evidence: {filename}",
+                                            to_emails=[teacher_email]
+                                        )
+                                        print(f"[DEBUG] Email sent to {teacher_email} for Level 2 warning: {reason}")
+                                    else:
+                                        print(f"[DEBUG] No teacher email found for session {exam_session_id}. Email not sent.")
+                                except Exception as e:
+                                    print(f"[DEBUG] Error sending email for Level 2 warning: {e}")
                         except Exception as e:
                             print(f"Error emitting alert: {e}")
 
