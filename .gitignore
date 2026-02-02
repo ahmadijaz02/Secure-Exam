@@ -1,0 +1,7 @@
+# Dependencies
+node_modules/
+
+# Build caches
+.cache/
+Client/node_modules/.cache/
+
