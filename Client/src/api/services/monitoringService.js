@@ -1,16 +1,12 @@
-import axios from 'axios';
-import { API_CONFIG } from '../config/apiConfig';
-
-const API_BASE = `${API_CONFIG.BASE_URL}/monitoring`;
+import apiService from './apiService';
 
 const monitoringService = {
   /**
    * Start monitoring camera
    */
-  async startMonitoring() {
+  async startMonitoring(sessionId) {
     try {
-      const response = await axios.post(`${API_BASE}/start`, {});
-      return response.data;
+      return await apiService.post('/monitoring/start', { session_id: sessionId });
     } catch (error) {
       throw error;
     }
@@ -21,8 +17,7 @@ const monitoringService = {
    */
   async stopMonitoring() {
     try {
-      const response = await axios.post(`${API_BASE}/stop`, {});
-      return response.data;
+      return await apiService.post('/monitoring/stop', {});
     } catch (error) {
       throw error;
     }
@@ -33,8 +28,7 @@ const monitoringService = {
    */
   async getMonitoringStatus() {
     try {
-      const response = await axios.get(`${API_BASE}/status`);
-      return response.data;
+      return await apiService.get('/monitoring/status');
     } catch (error) {
       throw error;
     }

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import monitoringService from '../../api/services/monitoringService';
 import socketService from '../../utils/socket';
 import { useNotification } from '../../context/notification/NotificationContext';
@@ -10,6 +10,7 @@ import LoadingSpinner from '../../components/ui/LoadingSpinner';
 // Same pattern as FYP: default namespace, "frame" (raw base64) and "log" (string)
 const ExamMonitoring = () => {
   const navigate = useNavigate();
+  const { examSessionId } = useParams();
   const notification = useNotification();
 
   const [isMonitoring, setIsMonitoring] = useState(false);
@@ -80,23 +81,25 @@ const ExamMonitoring = () => {
     };
   }, [handleFrame, handleLog]);
 
-  const startMonitoring = async () => {
-    try {
-      setIsLoading(true);
-      await monitoringService.startMonitoring();
-      setIsMonitoring(true);
-      setAlerts([]);
-      setLogs([]);
-      setFrameData(null);
-      setFrameCount(0);
-      setLastFrameAt(null);
-      notification.showSuccess('Camera started – feed will appear shortly');
-    } catch (error) {
-      notification.showError(error.response?.data?.error || error.message || 'Failed to start monitoring');
-    } finally {
-      setIsLoading(false);
+  useEffect(() => {
+    const fetchStatus = async () => {
+      try {
+        const status = await monitoringService.getMonitoringStatus();
+        setIsMonitoring(Boolean(status?.is_monitoring));
+      } catch (_) {
+        setIsMonitoring(false);
+      }
+    };
+
+    fetchStatus();
+  }, []);
+
+  useEffect(() => {
+    if (!examSessionId) {
+      notification.showError('Missing exam session. Start monitoring from Active Sessions.');
+      navigate('/teacher/sessions');
     }
-  };
+  }, [examSessionId, navigate, notification]);
 
   const stopMonitoring = async () => {
     try {
@@ -174,8 +177,12 @@ const ExamMonitoring = () => {
               </div>
               <div className="flex gap-3">
                 {!isMonitoring ? (
-                  <Button onClick={startMonitoring} disabled={isLoading} className="bg-green-600 hover:bg-green-700">
-                    {isLoading ? <LoadingSpinner size="sm" /> : 'Start Monitoring'}
+                  <Button
+                    onClick={() => navigate('/teacher/sessions')}
+                    disabled={isLoading}
+                    variant="secondary"
+                  >
+                    Go to Active Sessions
                   </Button>
                 ) : (
                   <Button onClick={stopMonitoring} disabled={isLoading} variant="danger">
@@ -188,6 +195,11 @@ const ExamMonitoring = () => {
               <div className="mt-4 flex items-center gap-2">
                 <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse" />
                 <span className="text-sm text-green-600 dark:text-green-400 font-medium">Monitoring Active</span>
+              </div>
+            )}
+            {!isMonitoring && (
+              <div className="mt-4 text-sm text-gray-600 dark:text-gray-400">
+                Start a session from Active Sessions to begin monitoring.
               </div>
             )}
           </div>

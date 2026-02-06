@@ -115,6 +115,16 @@ const adminService = {
     return response.data;
   },
 
+  // ========== INCIDENTS / REPORTS ==========
+
+  /**
+   * Get incidents with optional session filter
+   */
+  getIncidents: async (params = {}) => {
+    const response = await apiClient.get('/admin/incidents', { params });
+    return response.data;
+  },
+
   // ========== SEATING PLAN MANAGEMENT ==========
 
   /**

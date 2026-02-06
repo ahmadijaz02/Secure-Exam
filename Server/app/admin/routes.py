@@ -3,6 +3,7 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 from email_validator import validate_email, EmailNotValidError
 from pymongo.errors import DuplicateKeyError
 from datetime import datetime
+import os
 from app.admin import bp
 from app import get_models
 
@@ -60,6 +61,60 @@ def get_dashboard_stats():
         
     except Exception as e:
         current_app.logger.error(f"Get dashboard stats error: {str(e)}")
+        return jsonify({'message': 'Internal server error'}), 500
+
+# ========== INCIDENTS (REPORTING) ==========
+
+@bp.route('/incidents', methods=['GET'])
+@jwt_required()
+def list_incidents():
+    """Admin-only endpoint to list incidents with optional session filter"""
+    try:
+        current_user, error_response, status_code = require_admin()
+        if error_response:
+            return error_response, status_code
+
+        models = get_models()
+        incident_model = models['incident']
+
+        exam_session_id = request.args.get('exam_session_id')
+        limit = request.args.get('limit')
+
+        query = {}
+        if exam_session_id:
+            query['exam_session_id'] = exam_session_id
+
+        cursor = incident_model.collection.find(query).sort('created_at', -1)
+        if limit:
+            try:
+                cursor = cursor.limit(int(limit))
+            except ValueError:
+                return jsonify({'message': 'Invalid limit value'}), 400
+
+        incidents = [incident_model.to_dict(i) for i in cursor]
+        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'suspicious_alerts'))
+        for incident in incidents:
+            image_url = incident.get('image_url')
+            if not image_url or image_url.startswith('http') or image_url.startswith('/api/alerts/'):
+                continue
+            if image_url.startswith('suspicious_alerts'):
+                relative = image_url.split('suspicious_alerts', 1)[1].lstrip('/\\')
+                incident['image_url'] = f"/api/alerts/{relative.replace(os.sep, '/')}"
+                continue
+            if os.path.isabs(image_url):
+                relative = os.path.relpath(image_url, base_dir)
+                if not relative.startswith('..'):
+                    incident['image_url'] = f"/api/alerts/{relative.replace(os.sep, '/')}"
+                    continue
+            incident['image_url'] = f"/api/alerts/{os.path.basename(image_url)}"
+
+        return jsonify({
+            'incidents': incidents,
+            'total': len(incidents)
+        }), 200
+
+    except Exception as e:
+        current_app.logger.error(f"List incidents error: {str(e)}")
         return jsonify({'message': 'Internal server error'}), 500
 
 # ========== USER MANAGEMENT ROUTES ==========

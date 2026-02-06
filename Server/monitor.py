@@ -74,8 +74,13 @@ def emit_frame(img):
 def save_alert(img, reason, last_time):
     current_time = time.time()
     if SAVE_ALERTS and (current_time - last_time > ALERT_COOLDOWN):
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{output_folder}/ALERT_{reason}_{timestamp}.jpg"
+        now = datetime.now()
+        session_folder = os.environ.get("EXAM_SESSION_FOLDER")
+        date_folder = now.strftime("%Y-%m-%d")
+        target_dir = os.path.join(output_folder, session_folder or date_folder)
+        os.makedirs(target_dir, exist_ok=True)
+        timestamp = now.strftime("%Y%m%d_%H%M%S")
+        filename = os.path.join(target_dir, f"ALERT_{reason}_{timestamp}.jpg")
         cv2.imwrite(filename, img)
         emit(f"ALERT:{reason}:{timestamp}:{filename}")
         return current_time

@@ -1,4 +1,5 @@
 from flask import request, jsonify, current_app
+from flask_jwt_extended import jwt_required, get_jwt_identity
 from app.monitoring import bp
 from app import socketio
 import subprocess
@@ -95,6 +96,15 @@ def process_monitor_output(process, socketio_instance, app):
                     reason = parts[1]
                     timestamp = parts[2] if len(parts) > 2 else ""
                     filename = parts[3] if len(parts) > 3 else None
+                    image_path = None
+                    if filename:
+                        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'suspicious_alerts'))
+                        if os.path.isabs(filename):
+                            relative_path = os.path.relpath(filename, base_dir)
+                        else:
+                            relative_path = os.path.relpath(filename, 'suspicious_alerts')
+                        relative_path = relative_path.replace(os.sep, '/')
+                        image_path = f"/api/alerts/{relative_path}"
                     print(f"[Monitor] Alert: {reason}")
                     # Determine warning level and type
                     behavior_types = ['HEAD_LEFT', 'HEAD_RIGHT', 'HAND_MOUTH', 'WATCH_DETECTED']
@@ -116,19 +126,22 @@ def process_monitor_output(process, socketio_instance, app):
                                 exam_session_id=exam_session_id,
                                 incident_type=reason,
                                 description=f"Auto-detected: {reason}",
-                                image_url=filename,
+                                image_url=image_path,
                                 confidence_score=None
                             )
                             # Emit to dashboard
-                            socketio_instance.emit('log', line, namespace='/')
-                            socketio_instance.emit('monitoring_alert', {
+                            payload = {
                                 'reason': reason,
                                 'timestamp': timestamp,
                                 'alert_time': datetime.now().isoformat(),
                                 'filename': filename,
                                 'severity': get_severity(reason),
-                                'warning_level': warning_level
-                            }, namespace='/monitoring')
+                                'warning_level': warning_level,
+                                'exam_session_id': exam_session_id
+                            }
+                            socketio_instance.emit('log', line, namespace='/')
+                            socketio_instance.emit('monitoring_alert', payload, namespace='/monitoring')
+                            socketio_instance.emit('monitoring_alert', payload, namespace='/')
                             # Send email for object detection only
                             if send_email:
                                 try:
@@ -182,11 +195,40 @@ def process_monitor_output(process, socketio_instance, app):
 
 
 @bp.route('/start', methods=['POST'])
+@jwt_required()
 def start_monitoring():
     """Start monitoring camera - launch monitor.py and stream frames via Socket.IO"""
     global current_process, monitoring_active
 
     try:
+        current_user_id = get_jwt_identity()
+        from app import get_models
+        models = get_models()
+        user_model = models['user']
+        session_model = models['exam_session']
+
+        user = user_model.find_by_id(current_user_id)
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+        if user.get('role') != 'teacher':
+            return jsonify({'error': 'Access denied. Teacher privileges required.'}), 403
+
+        data = request.get_json(silent=True) or {}
+        session_id = data.get('session_id')
+        if not session_id:
+            return jsonify({'error': 'session_id is required'}), 400
+
+        session = session_model.find_by_id(session_id)
+        if not session:
+            return jsonify({'error': 'Exam session not found'}), 404
+        if session.get('teacher_id') != current_user_id:
+            return jsonify({'error': 'Access denied. Session not assigned to you.'}), 403
+
+        app = current_app._get_current_object()
+        previous_session_id = getattr(app, 'current_exam_session_id', None)
+        if previous_session_id and previous_session_id != session_id:
+            session_model.update_session(previous_session_id, {'is_active': False})
+
         if monitoring_active and current_process and current_process.poll() is None:
             current_process.terminate()
             try:
@@ -196,11 +238,20 @@ def start_monitoring():
             current_process = None
 
         monitoring_active = True
+        app.current_exam_session_id = session_id
+        session_model.update_session(session_id, {'is_active': True})
 
         server_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
         monitor_script = os.path.join(server_dir, 'monitor.py')
         if not os.path.exists(monitor_script):
             return jsonify({'error': f'monitor.py not found at {monitor_script}'}), 404
+
+        session_name = session.get('name') or 'session'
+        safe_session_name = ''.join(
+            ch if ch.isalnum() or ch in ('-', '_') else '-'
+            for ch in session_name
+        ).strip('-') or 'session'
+        session_folder = f"{safe_session_name}-{datetime.now().strftime('%Y-%m-%d')}"
 
         current_process = subprocess.Popen(
             [sys.executable, '-u', monitor_script],
@@ -209,12 +260,15 @@ def start_monitoring():
             universal_newlines=True,
             bufsize=1,
             cwd=os.path.dirname(monitor_script),
-            env={**os.environ, 'PYTHONUNBUFFERED': '1'}
+            env={
+                **os.environ,
+                'PYTHONUNBUFFERED': '1',
+                'EXAM_SESSION_FOLDER': session_folder
+            }
         )
 
         print(f"Monitor started PID={current_process.pid}")
 
-        app = current_app._get_current_object()
         socketio_instance = current_app.extensions.get('socketio') or socketio
 
         # Use a real thread for subprocess readline (avoids eventlet blocking on pipe I/O)
@@ -228,7 +282,8 @@ def start_monitoring():
         return jsonify({
             'success': True,
             'message': 'Monitoring started',
-            'pid': current_process.pid
+            'pid': current_process.pid,
+            'session_id': session_id
         }), 200
 
     except Exception as e:
@@ -238,11 +293,30 @@ def start_monitoring():
 
 
 @bp.route('/stop', methods=['POST'])
+@jwt_required()
 def stop_monitoring():
     """Stop monitoring camera"""
     global current_process, monitoring_active
 
     try:
+        current_user_id = get_jwt_identity()
+        app = current_app._get_current_object()
+        from app import get_models
+        models = get_models()
+        user_model = models['user']
+        session_model = models['exam_session']
+        current_session_id = getattr(app, 'current_exam_session_id', None)
+
+        user = user_model.find_by_id(current_user_id)
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+        if user.get('role') != 'teacher':
+            return jsonify({'error': 'Access denied. Teacher privileges required.'}), 403
+        if current_session_id:
+            session = session_model.find_by_id(current_session_id)
+            if session and session.get('teacher_id') != current_user_id:
+                return jsonify({'error': 'Access denied. Session not assigned to you.'}), 403
+
         monitoring_active = False
         if current_process:
             current_process.terminate()
@@ -251,6 +325,9 @@ def stop_monitoring():
             except subprocess.TimeoutExpired:
                 current_process.kill()
             current_process = None
+        if current_session_id:
+            session_model.update_session(current_session_id, {'is_active': False})
+            app.current_exam_session_id = None
         return jsonify({'success': True, 'message': 'Monitoring stopped'}), 200
     except Exception as e:
         print(f"Error stopping monitoring: {e}")

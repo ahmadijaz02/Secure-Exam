@@ -107,6 +107,18 @@ class ExamService {
       throw error;
     }
   }
+
+  async getTeacherSessions(params = {}) {
+    try {
+      const queryString = new URLSearchParams(params).toString();
+      const url = queryString
+        ? `${API_ENDPOINTS.EXAM_SESSIONS.LIST}?${queryString}`
+        : API_ENDPOINTS.EXAM_SESSIONS.LIST;
+      return await apiService.get(url);
+    } catch (error) {
+      throw error;
+    }
+  }
 }
 
 // Create and export singleton instance

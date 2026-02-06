@@ -20,10 +20,14 @@ import AdminDashboard from './pages/admin/AdminDashboard';
 import AdminExamSessions from './pages/admin/AdminExamSessions';
 import AdminSeatingPlans from './pages/admin/AdminSeatingPlans';
 import AdminUsers from './pages/admin/AdminUsers';
+import AdminReports from './pages/admin/AdminReports';
 
 // Teacher Pages
 import TeacherDashboard from './pages/teacher/TeacherDashboard';
+import TeacherSessions from './pages/teacher/TeacherSessions';
 import ExamMonitoring from './pages/teacher/ExamMonitoring';
+import TeacherAlerts from './pages/teacher/TeacherAlerts';
+import TeacherReports from './pages/teacher/TeacherReports';
 
 // Route Guards
 import { AdminRoute, TeacherRoute } from './components/guards/RoleBasedRoute';
@@ -70,12 +74,7 @@ function App() {
               } />
               <Route path="/admin/reports" element={
                 <AdminRoute>
-                  <AdminLayout>
-                    <div className="space-y-6">
-                      <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Reports</h1>
-                      <p className="text-gray-600 dark:text-gray-400">Generate and view comprehensive reports</p>
-                    </div>
-                  </AdminLayout>
+                  <AdminLayout><AdminReports /></AdminLayout>
                 </AdminRoute>
               } />
               <Route path="/admin/settings" element={
@@ -97,12 +96,7 @@ function App() {
               } />
               <Route path="/teacher/sessions" element={
                 <TeacherRoute>
-                  <TeacherLayout>
-                    <div className="space-y-6">
-                      <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Active Sessions</h1>
-                      <p className="text-gray-600 dark:text-gray-400">View and manage your active exam sessions</p>
-                    </div>
-                  </TeacherLayout>
+                  <TeacherLayout><TeacherSessions /></TeacherLayout>
                 </TeacherRoute>
               } />
               <Route path="/teacher/monitoring/:examSessionId" element={
@@ -110,29 +104,14 @@ function App() {
                   <TeacherLayout><ExamMonitoring /></TeacherLayout>
                 </TeacherRoute>
               } />
-              <Route path="/teacher/monitoring" element={
-                <TeacherRoute>
-                  <TeacherLayout><ExamMonitoring /></TeacherLayout>
-                </TeacherRoute>
-              } />
               <Route path="/teacher/alerts" element={
                 <TeacherRoute>
-                  <TeacherLayout>
-                    <div className="space-y-6">
-                      <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Alerts</h1>
-                      <p className="text-gray-600 dark:text-gray-400">View all alerts and incidents from your sessions</p>
-                    </div>
-                  </TeacherLayout>
+                  <TeacherLayout><TeacherAlerts /></TeacherLayout>
                 </TeacherRoute>
               } />
               <Route path="/teacher/reports" element={
                 <TeacherRoute>
-                  <TeacherLayout>
-                    <div className="space-y-6">
-                      <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Reports</h1>
-                      <p className="text-gray-600 dark:text-gray-400">View post-exam reports and analytics</p>
-                    </div>
-                  </TeacherLayout>
+                  <TeacherLayout><TeacherReports /></TeacherLayout>
                 </TeacherRoute>
               } />
               <Route path="/teacher/profile" element={

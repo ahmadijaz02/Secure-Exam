@@ -12,7 +12,6 @@ function TeacherLayout({ children }) {
   const teacherMenuItems = [
     { label: 'Dashboard', path: '/teacher/dashboard', icon: '📊' },
     { label: 'Active Sessions', path: '/teacher/sessions', icon: '📋' },
-    { label: 'Monitoring', path: '/teacher/monitoring', icon: '📹' },
     { label: 'Alerts', path: '/teacher/alerts', icon: '🚨' },
     { label: 'Reports', path: '/teacher/reports', icon: '📈' },
     { label: 'Profile', path: '/teacher/profile', icon: '👤' },
