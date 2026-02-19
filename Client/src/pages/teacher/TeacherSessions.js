@@ -14,22 +14,23 @@ function TeacherSessions() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
   const [startingSessionId, setStartingSessionId] = useState(null);
+  const [stoppingSessionId, setStoppingSessionId] = useState(null);
+
+  const fetchSessions = async () => {
+    try {
+      setIsLoading(true);
+      const data = await examService.getTeacherSessions();
+      setSessions(Array.isArray(data.sessions) ? data.sessions : []);
+      setError('');
+    } catch (err) {
+      setSessions([]);
+      setError(err.message || 'Failed to load sessions');
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   useEffect(() => {
-    const fetchSessions = async () => {
-      try {
-        setIsLoading(true);
-        const data = await examService.getTeacherSessions();
-        setSessions(Array.isArray(data.sessions) ? data.sessions : []);
-        setError('');
-      } catch (err) {
-        setSessions([]);
-        setError(err.message || 'Failed to load sessions');
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
     fetchSessions();
   }, []);
 
@@ -62,6 +63,19 @@ function TeacherSessions() {
     }
   };
 
+  const handleStopSession = async (sessionId) => {
+    try {
+      setStoppingSessionId(sessionId);
+      await monitoringService.stopMonitoring(sessionId);
+      addNotification('success', 'Monitoring stopped');
+      await fetchSessions();
+    } catch (err) {
+      addNotification('error', err.message || 'Failed to stop monitoring');
+    } finally {
+      setStoppingSessionId(null);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div>
@@ -85,6 +99,7 @@ function TeacherSessions() {
               {sessions.map((session) => {
                 const status = getSessionStatus(session);
                 const isStarting = startingSessionId === session.id;
+                const isStopping = stoppingSessionId === session.id;
                 const isCompleted = status === 'completed';
 
                 return (
@@ -104,12 +119,22 @@ function TeacherSessions() {
                     </div>
                     <div className="flex items-center gap-3">
                       {status === 'active' ? (
-                        <Button
-                          variant="secondary"
-                          onClick={() => navigate(`/teacher/monitoring/${session.id}`)}
-                        >
-                          Open Monitoring
-                        </Button>
+                        <>
+                          <Button
+                            variant="secondary"
+                            disabled={isStopping}
+                            onClick={() => navigate(`/teacher/monitoring/${session.id}`)}
+                          >
+                            Open Monitoring
+                          </Button>
+                          <Button
+                            variant="danger"
+                            disabled={isStopping}
+                            onClick={() => handleStopSession(session.id)}
+                          >
+                            {isStopping ? <LoadingSpinner size="sm" /> : 'Stop Monitoring'}
+                          </Button>
+                        </>
                       ) : (
                         <Button
                           variant="primary"

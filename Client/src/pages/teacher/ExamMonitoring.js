@@ -18,23 +18,44 @@ const ExamMonitoring = () => {
   const [logs, setLogs] = useState([]);
   const [systemStatus, setSystemStatus] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [frameData, setFrameData] = useState(null);
+  const [hasFrame, setHasFrame] = useState(false);
   const [frameCount, setFrameCount] = useState(0);
   const [lastFrameAt, setLastFrameAt] = useState(null);
   const [isSocketConnected, setIsSocketConnected] = useState(false);
 
   const videoImgRef = useRef(null);
+  const latestFrameRef = useRef(null);
+  const renderScheduledRef = useRef(false);
+  const receivedFramesRef = useRef(0);
+  const lastStatsUpdateRef = useRef(0);
 
   const handleFrame = useCallback((data) => {
     if (data && typeof data === 'string' && data.length > 100) {
-      if (videoImgRef.current) {
-        videoImgRef.current.src = `data:image/jpeg;base64,${data}`;
+      latestFrameRef.current = data;
+      receivedFramesRef.current += 1;
+
+      if (!renderScheduledRef.current) {
+        renderScheduledRef.current = true;
+        requestAnimationFrame(() => {
+          const latestFrame = latestFrameRef.current;
+          if (videoImgRef.current && latestFrame) {
+            videoImgRef.current.src = `data:image/jpeg;base64,${latestFrame}`;
+          }
+          renderScheduledRef.current = false;
+        });
       }
-      setFrameData(data);
-      setFrameCount((prev) => prev + 1);
-      setLastFrameAt(new Date());
+
+      const now = Date.now();
+      if (!hasFrame) {
+        setHasFrame(true);
+      }
+      if (now - lastStatsUpdateRef.current >= 1000) {
+        setFrameCount(receivedFramesRef.current);
+        setLastFrameAt(new Date(now));
+        lastStatsUpdateRef.current = now;
+      }
     }
-  }, []);
+  }, [hasFrame]);
 
   const handleLog = useCallback((msg) => {
     if (!msg || typeof msg !== 'string') return;
@@ -104,12 +125,15 @@ const ExamMonitoring = () => {
   const stopMonitoring = async () => {
     try {
       setIsLoading(true);
-      await monitoringService.stopMonitoring();
+      await monitoringService.stopMonitoring(examSessionId);
       setIsMonitoring(false);
-      setFrameData(null);
+      latestFrameRef.current = null;
+      setHasFrame(false);
+      setFrameCount(0);
+      setLastFrameAt(null);
       notification.showSuccess('Camera stopped');
     } catch (error) {
-      notification.showError(error.response?.data?.error || 'Failed to stop monitoring');
+      notification.showError(error.message || 'Failed to stop monitoring');
     } finally {
       setIsLoading(false);
     }
@@ -151,22 +175,22 @@ const ExamMonitoring = () => {
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 p-6">
+    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 p-3 sm:p-4 lg:p-6">
       <div className="max-w-7xl mx-auto">
-        <div className="mb-6 flex justify-between items-center">
+        <div className="mb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
           <div>
-            <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Live Monitoring</h1>
+            <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Live Monitoring</h1>
             <p className="text-gray-600 dark:text-gray-400 mt-1">Real-time exam monitoring with AI detection</p>
           </div>
-          <Button variant="secondary" onClick={() => navigate(-1)}>Back</Button>
+          <Button variant="secondary" className="w-full sm:w-auto" onClick={() => navigate(-1)}>Back</Button>
         </div>
 
         <Card className="mb-6">
-          <div className="p-6">
-            <div className="flex items-center justify-between">
-              <div>
+          <div className="p-4 sm:p-6">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div className="min-w-0">
                 <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">Camera Control</h2>
-                <p className="text-sm text-gray-600 dark:text-gray-400">
+                <p className="text-sm text-gray-600 dark:text-gray-400 break-words">
                   {isSocketConnected ? (
                     <span className="text-green-600 dark:text-green-400">● Live feed connected</span>
                   ) : (
@@ -175,17 +199,18 @@ const ExamMonitoring = () => {
                   {systemStatus ? ` • ${systemStatus}` : ''}
                 </p>
               </div>
-              <div className="flex gap-3">
+              <div className="flex gap-3 w-full sm:w-auto">
                 {!isMonitoring ? (
                   <Button
                     onClick={() => navigate('/teacher/sessions')}
                     disabled={isLoading}
                     variant="secondary"
+                    className="w-full sm:w-auto"
                   >
                     Go to Active Sessions
                   </Button>
                 ) : (
-                  <Button onClick={stopMonitoring} disabled={isLoading} variant="danger">
+                  <Button onClick={stopMonitoring} disabled={isLoading} variant="danger" className="w-full sm:w-auto">
                     {isLoading ? <LoadingSpinner size="sm" /> : 'Stop Monitoring'}
                   </Button>
                 )}
@@ -205,9 +230,9 @@ const ExamMonitoring = () => {
           </div>
         </Card>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <Card>
-            <div className="p-6">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+          <Card className="min-w-0 overflow-hidden">
+            <div className="p-4 sm:p-6">
               <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">Live Video Feed</h2>
               {isMonitoring && (
                 <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
@@ -215,14 +240,14 @@ const ExamMonitoring = () => {
                   {lastFrameAt ? ` • Last: ${lastFrameAt.toLocaleTimeString()}` : ''}
                 </p>
               )}
-              <div className="relative bg-black rounded-lg overflow-hidden aspect-video flex items-center justify-center min-h-[280px]">
-                {frameData ? (
+              <div className="relative w-full max-w-full bg-black rounded-lg overflow-hidden aspect-video flex items-center justify-center min-h-[220px] sm:min-h-[280px]">
+                {hasFrame ? (
                   <>
                     <img
                       ref={videoImgRef}
-                      src={`data:image/jpeg;base64,${frameData}`}
+                      src=""
                       alt="Live feed"
-                      className="w-full h-full object-cover min-h-[360px] min-w-[640px] max-h-[600px] max-w-full rounded-lg"
+                      className="block w-full h-full max-w-full object-cover rounded-lg"
                       style={{ background: '#222' }}
                     />
                     <div className="absolute top-2 left-2 px-2 py-1 bg-green-500/90 text-white text-xs font-semibold rounded-full flex items-center gap-1">
@@ -242,10 +267,10 @@ const ExamMonitoring = () => {
             </div>
           </Card>
 
-          <Card>
-            <div className="p-6">
+          <Card className="min-w-0">
+            <div className="p-4 sm:p-6">
               <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">Alerts ({alerts.length})</h2>
-              <div className="space-y-3 max-h-[500px] overflow-y-auto">
+              <div className="space-y-3 max-h-[50vh] lg:max-h-[500px] overflow-y-auto">
                 {alerts.length === 0 ? (
                   <div className="text-center text-gray-500 py-8">
                     <svg className="w-12 h-12 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -283,9 +308,9 @@ const ExamMonitoring = () => {
         </div>
 
         <Card className="mt-6">
-          <div className="p-6">
+          <div className="p-4 sm:p-6">
             <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">Activity Logs</h2>
-            <div className="space-y-2 max-h-[300px] overflow-y-auto text-sm">
+            <div className="space-y-2 max-h-[40vh] lg:max-h-[300px] overflow-y-auto text-sm">
               {logs.length === 0 ? (
                 <p className="text-gray-500 py-2">
                   {isSocketConnected ? 'Waiting for logs…' : 'Connecting to server… (ensure backend runs on port 5000)'}

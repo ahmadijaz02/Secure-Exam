@@ -8,6 +8,8 @@ import os
 from datetime import datetime
 import sys
 
+EMIT_LEGACY_MONITORING_FRAME = os.environ.get('EMIT_LEGACY_MONITORING_FRAME', '0').lower() in ('1', 'true', 'yes', 'on')
+
 # Global state
 current_process = None
 monitoring_active = False
@@ -63,60 +65,60 @@ def process_monitor_output(process, socketio_instance, app):
     global monitoring_active
     frame_count = 0
     try:
-        while monitoring_active and process.poll() is None:
-            line = process.stdout.readline()
-            if not line:
-                break
+        with app.app_context():
+            while monitoring_active and process.poll() is None:
+                line = process.stdout.readline()
+                if not line:
+                    break
 
-            line = line.strip()
-            if not line:
-                continue
-
-            # Emit same as FYP: default namespace, "frame" (raw base64) and "log" (string)
-            if line.startswith('FRAME:'):
-                frame_data = line[6:]
-                if not frame_data or len(frame_data) < 100:
+                line = line.strip()
+                if not line:
                     continue
-                frame_count += 1
-                if frame_count % 10 == 0:
-                    print(f"[Monitor] Emitted frame #{frame_count}")
 
-                with app.app_context():
+                # Emit same as FYP: default namespace, "frame" (raw base64) and "log" (string)
+                if line.startswith('FRAME:'):
+                    frame_data = line[6:]
+                    if not frame_data or len(frame_data) < 100:
+                        continue
+                    frame_count += 1
+                    if frame_count % 30 == 0:
+                        print(f"[Monitor] Emitted frame #{frame_count}")
+
                     try:
                         # FYP style: emit raw base64 to default namespace as "frame"
                         socketio_instance.emit('frame', frame_data, namespace='/')
-                        # Also emit to /monitoring for backward compatibility
-                        socketio_instance.emit('video_frame', {'frame': f'data:image/jpeg;base64,{frame_data}'}, namespace='/monitoring')
+                        # Optional backward compatibility event (off by default for lower latency)
+                        if EMIT_LEGACY_MONITORING_FRAME:
+                            socketio_instance.emit('video_frame', {'frame': f'data:image/jpeg;base64,{frame_data}'}, namespace='/monitoring')
                     except Exception as e:
                         print(f"Error emitting frame: {e}")
 
-            elif line.startswith('ALERT:'):
-                parts = line.split(':', 3)
-                if len(parts) >= 2:
-                    reason = parts[1]
-                    timestamp = parts[2] if len(parts) > 2 else ""
-                    filename = parts[3] if len(parts) > 3 else None
-                    image_path = None
-                    if filename:
-                        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'suspicious_alerts'))
-                        if os.path.isabs(filename):
-                            relative_path = os.path.relpath(filename, base_dir)
+                elif line.startswith('ALERT:'):
+                    parts = line.split(':', 3)
+                    if len(parts) >= 2:
+                        reason = parts[1]
+                        timestamp = parts[2] if len(parts) > 2 else ""
+                        filename = parts[3] if len(parts) > 3 else None
+                        image_path = None
+                        if filename:
+                            base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'suspicious_alerts'))
+                            if os.path.isabs(filename):
+                                relative_path = os.path.relpath(filename, base_dir)
+                            else:
+                                relative_path = os.path.relpath(filename, 'suspicious_alerts')
+                            relative_path = relative_path.replace(os.sep, '/')
+                            image_path = f"/api/alerts/{relative_path}"
+                        print(f"[Monitor] Alert: {reason}")
+                        # Determine warning level and type
+                        behavior_types = ['HEAD_LEFT', 'HEAD_RIGHT', 'HAND_MOUTH', 'WATCH_DETECTED']
+                        object_types = ['PHONE_DETECTED', 'PAPER_PASSING']
+                        if reason in object_types:
+                            warning_level = 2
+                            send_email = True
                         else:
-                            relative_path = os.path.relpath(filename, 'suspicious_alerts')
-                        relative_path = relative_path.replace(os.sep, '/')
-                        image_path = f"/api/alerts/{relative_path}"
-                    print(f"[Monitor] Alert: {reason}")
-                    # Determine warning level and type
-                    behavior_types = ['HEAD_LEFT', 'HEAD_RIGHT', 'HAND_MOUTH', 'WATCH_DETECTED']
-                    object_types = ['PHONE_DETECTED', 'PAPER_PASSING']
-                    if reason in object_types:
-                        warning_level = 2
-                        send_email = True
-                    else:
-                        warning_level = 1
-                        send_email = False
-                    # Save to DB
-                    with app.app_context():
+                            warning_level = 1
+                            send_email = False
+                        # Save to DB
                         try:
                             # Save incident to DB
                             incident_model = app.incident_model
@@ -173,10 +175,9 @@ def process_monitor_output(process, socketio_instance, app):
                         except Exception as e:
                             print(f"Error emitting alert: {e}")
 
-            else:
-                # Status/log line - emit as "log" to default namespace (FYP style)
-                print(f"[Monitor] {line[:200]}")
-                with app.app_context():
+                else:
+                    # Status/log line - emit as "log" to default namespace (FYP style)
+                    print(f"[Monitor] {line[:200]}")
                     try:
                         socketio_instance.emit('log', line, namespace='/')
                         socketio_instance.emit('monitoring_status', {'message': line}, namespace='/monitoring')
@@ -306,15 +307,22 @@ def stop_monitoring():
         user_model = models['user']
         session_model = models['exam_session']
         current_session_id = getattr(app, 'current_exam_session_id', None)
+        data = request.get_json(silent=True) or {}
+        requested_session_id = data.get('session_id')
 
         user = user_model.find_by_id(current_user_id)
         if not user:
             return jsonify({'error': 'User not found'}), 404
         if user.get('role') != 'teacher':
             return jsonify({'error': 'Access denied. Teacher privileges required.'}), 403
-        if current_session_id:
-            session = session_model.find_by_id(current_session_id)
-            if session and session.get('teacher_id') != current_user_id:
+
+        target_session_id = requested_session_id or current_session_id
+        target_session = None
+        if target_session_id:
+            target_session = session_model.find_by_id(target_session_id)
+            if not target_session:
+                return jsonify({'error': 'Exam session not found'}), 404
+            if target_session.get('teacher_id') != current_user_id:
                 return jsonify({'error': 'Access denied. Session not assigned to you.'}), 403
 
         monitoring_active = False
@@ -325,9 +333,13 @@ def stop_monitoring():
             except subprocess.TimeoutExpired:
                 current_process.kill()
             current_process = None
-        if current_session_id:
-            session_model.update_session(current_session_id, {'is_active': False})
+
+        if target_session_id:
+            session_model.update_session(target_session_id, {'is_active': False})
+
+        if current_session_id and (not target_session_id or target_session_id == current_session_id):
             app.current_exam_session_id = None
+
         return jsonify({'success': True, 'message': 'Monitoring stopped'}), 200
     except Exception as e:
         print(f"Error stopping monitoring: {e}")

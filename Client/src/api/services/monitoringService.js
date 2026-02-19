@@ -15,9 +15,10 @@ const monitoringService = {
   /**
    * Stop monitoring
    */
-  async stopMonitoring() {
+  async stopMonitoring(sessionId = null) {
     try {
-      return await apiService.post('/monitoring/stop', {});
+      const payload = sessionId ? { session_id: sessionId } : {};
+      return await apiService.post('/monitoring/stop', payload);
     } catch (error) {
       throw error;
     }

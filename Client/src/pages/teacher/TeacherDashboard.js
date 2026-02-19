@@ -23,9 +23,11 @@ function TeacherDashboard() {
   const [activeSession, setActiveSession] = useState(null);
   const [isLoadingActiveSession, setIsLoadingActiveSession] = useState(true);
   const [activeSessionError, setActiveSessionError] = useState('');
-  const [frameData, setFrameData] = useState(null);
+  const [hasFrame, setHasFrame] = useState(false);
   const [isSocketConnected, setIsSocketConnected] = useState(false);
   const videoImgRef = useRef(null);
+  const latestFrameRef = useRef(null);
+  const renderScheduledRef = useRef(false);
   const [recentIncidents, setRecentIncidents] = useState([]);
   const [isLoadingRecent, setIsLoadingRecent] = useState(true);
   const [recentError, setRecentError] = useState('');
@@ -156,7 +158,8 @@ function TeacherDashboard() {
 
   useEffect(() => {
     if (!activeSession) {
-      setFrameData(null);
+      setHasFrame(false);
+      latestFrameRef.current = null;
       return undefined;
     }
 
@@ -165,10 +168,18 @@ function TeacherDashboard() {
     const onDisconnect = () => setIsSocketConnected(false);
     const onFrame = (data) => {
       if (data && typeof data === 'string' && data.length > 100) {
-        if (videoImgRef.current) {
-          videoImgRef.current.src = `data:image/jpeg;base64,${data}`;
+        latestFrameRef.current = data;
+        if (!renderScheduledRef.current) {
+          renderScheduledRef.current = true;
+          requestAnimationFrame(() => {
+            const latestFrame = latestFrameRef.current;
+            if (videoImgRef.current && latestFrame) {
+              videoImgRef.current.src = `data:image/jpeg;base64,${latestFrame}`;
+            }
+            renderScheduledRef.current = false;
+          });
         }
-        setFrameData(data);
+        setHasFrame(true);
       }
     };
 
@@ -287,13 +298,13 @@ function TeacherDashboard() {
                   Open Monitoring
                 </Button>
               </div>
-              <div className="relative bg-black rounded-lg overflow-hidden aspect-video flex items-center justify-center min-h-[240px]">
-                {frameData ? (
+              <div className="relative w-full max-w-full bg-black rounded-lg overflow-hidden aspect-video flex items-center justify-center min-h-[240px]">
+                {hasFrame ? (
                   <img
                     ref={videoImgRef}
-                    src={`data:image/jpeg;base64,${frameData}`}
+                    src=""
                     alt="Live feed"
-                    className="w-full h-full object-cover"
+                    className="block w-full h-full max-w-full object-cover"
                   />
                 ) : (
                   <div className="text-center text-gray-400">
