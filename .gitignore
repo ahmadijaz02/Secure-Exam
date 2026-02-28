@@ -1,7 +1,18 @@
-# Dependencies
+# Node
 node_modules/
-Client/node_modules
-# Build caches
 .cache/
-Client/node_modules/.cache/
+dist/
+build/
 
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Env
+.env
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
