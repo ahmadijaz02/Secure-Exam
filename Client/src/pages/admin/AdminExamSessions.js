@@ -38,8 +38,7 @@ function AdminExamSessions() {
 
   const [seatingFormData, setSeatingFormData] = useState({
     classroom_name: '',
-    rows: 5,
-    columns: 5,
+    total_seats: 5,
   });
 
   const [seats, setSeats] = useState([]);
@@ -119,12 +118,12 @@ function AdminExamSessions() {
     const { name, value } = e.target;
     setSeatingFormData(prev => ({
       ...prev,
-      [name]: name === 'rows' || name === 'columns' ? parseInt(value) : value
+      [name]: name === 'total_seats' ? parseInt(value) || 0 : value
     }));
   };
 
   const generateSeats = () => {
-    const newSeats = generateEmptySeats(seatingFormData.rows, seatingFormData.columns);
+    const newSeats = generateEmptySeats(seatingFormData.total_seats);
     setSeats(newSeats);
   };
 
@@ -163,11 +162,10 @@ function AdminExamSessions() {
         return;
       }
 
-      const seatsToSubmit = seats.length > 0 ? seats : generateEmptySeats(seatingFormData.rows, seatingFormData.columns);
+      const seatsToSubmit = seats.length > 0 ? seats : generateEmptySeats(seatingFormData.total_seats);
       const planData = {
         classroom_name: seatingFormData.classroom_name,
-        rows: seatingFormData.rows,
-        columns: seatingFormData.columns,
+        total_seats: seatingFormData.total_seats,
         seats: seatsToSubmit,
       };
 
@@ -287,8 +285,7 @@ function AdminExamSessions() {
                   classrooms: [{
                     name: planToLink.classroom_name,
                     seating_plan_id: planId,
-                    rows: planToLink.rows,
-                    columns: planToLink.columns
+                    total_seats: planToLink.total_seats || (planToLink.seats ? planToLink.seats.length : 0)
                   }]
                 }
               : session
@@ -401,8 +398,7 @@ function AdminExamSessions() {
   const resetSeatingForm = () => {
     setSeatingFormData({
       classroom_name: '',
-      rows: 5,
-      columns: 5,
+      total_seats: 5,
     });
     setSeats([]);
     setSelectedSeatId(null);
@@ -672,7 +668,7 @@ function AdminExamSessions() {
                                       <p className="text-base font-semibold text-gray-900 dark:text-white">{plan.classroom_name || 'Unnamed'}</p>
                                     </div>
                                     <p className="text-sm text-gray-600 dark:text-gray-400">
-                                      {plan.rows} × {plan.columns} = {plan.total_seats || (plan.rows * plan.columns)} seats
+                                      {plan.total_seats || (plan.seats ? plan.seats.length : 0)} seats
                                     </p>
                                     {plan.occupied_seats && plan.occupied_seats > 0 && (
                                       <p className="text-sm text-green-700 dark:text-green-400 mt-2 font-medium">
@@ -724,7 +720,7 @@ function AdminExamSessions() {
                                   <div className="flex-1">
                                     <p className="font-medium text-gray-900 dark:text-white">{plan.classroom_name || 'Unnamed'}</p>
                                     <p className="text-xs text-gray-600 dark:text-gray-400">
-                                      {plan.rows} × {plan.columns} = {plan.total_seats || (plan.rows * plan.columns)} seats
+                                      {plan.total_seats || (plan.seats ? plan.seats.length : 0)} seats
                                     </p>
                                     {plan.occupied_seats && plan.occupied_seats > 0 && (
                                       <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">

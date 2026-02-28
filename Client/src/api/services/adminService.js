@@ -223,6 +223,16 @@ const adminService = {
   unlinkSeatingPlanFromSession: async (sessionId, planId) => {
     const response = await apiClient.post(`/admin/exam-sessions/${sessionId}/seating-plans/${planId}/unlink`);
   },
+
+  /**
+   * Upload student file and map to an existing seating plan (image-based)
+   */
+  mapStudentsToPlan: async (planId, formData) => {
+    const response = await apiClient.post(`/admin/seating-plans/${planId}/students/map`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    });
+    return response.data;
+  },
 };
 
 export default adminService;

@@ -230,21 +230,39 @@ class SeatingPlan(MongoModel):
         self.collection.create_index("classroom_name")
         self.collection.create_index("exam_session_id")
     
-    def create_seating_plan(self, classroom_name, rows, columns, seats_data=None, exam_session_id=None):
-        """Create a new seating plan"""
+    def create_seating_plan(self, classroom_name, rows, columns, seats_data=None, exam_session_id=None, room_number=None, total_seats=None):
+        """Create a new seating plan
+        
+        Args:
+            classroom_name: Name of the classroom
+            rows: Number of rows (0 for image-based flexible layout)
+            columns: Number of columns (0 for image-based flexible layout)
+            seats_data: List of seat objects
+            exam_session_id: ID of the exam session this plan belongs to (optional)
+            room_number: Room number for display (optional)
+            total_seats: Total number of seats (optional, overrides calculated value)
+        """
         seats_data = seats_data or []
         occupied_seats = len([
             s for s in seats_data
             if s.get('occupied') or s.get('student_name') or s.get('roll_number')
         ])
         
+        # Determine total seats: use provided value, or calculate from rows/columns,
+        # or use the number of provided seats (image-based plans)
+        if total_seats is not None:
+            computed_total = total_seats
+        else:
+            computed_total = rows * columns if (rows and columns and rows * columns > 0) else len(seats_data)
+
         plan_doc = {
             'classroom_name': classroom_name,
             'exam_session_id': exam_session_id,  # Link to exam session
+            'room_number': room_number,  # Room number for display (e.g., "Room 101")
             'rows': rows,
             'columns': columns,
             'seats': seats_data,  # List of seat objects
-            'total_seats': rows * columns,
+            'total_seats': computed_total,
             'occupied_seats': occupied_seats,
             'created_at': datetime.utcnow(),
             'updated_at': datetime.utcnow()
