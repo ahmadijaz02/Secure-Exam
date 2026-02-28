@@ -174,8 +174,21 @@ class Incident(MongoModel):
         self.collection.create_index("created_at")
 
     def create_incident(self, exam_session_id, incident_type, description=None,
-                       image_url=None, confidence_score=None):
-        """Create a new incident"""
+                       image_url=None, confidence_score=None, student_id=None, 
+                       student_name=None, roll_number=None, seat_number=None):
+        """Create a new incident
+        
+        Args:
+            exam_session_id: ID of the exam session
+            incident_type: Type of incident (e.g., PHONE_DETECTED, CHEATING)
+            description: Description of the incident
+            image_url: URL of evidence image
+            confidence_score: Confidence score if ML-based detection
+            student_id: ID of student involved (if identified)
+            student_name: Name of student involved (if identified)
+            roll_number: Roll number of student involved (if identified)
+            seat_number: Seat number where incident occurred (for image-based seating)
+        """
         incident_doc = {
             'exam_session_id': exam_session_id,
             'incident_type': incident_type,
@@ -184,6 +197,10 @@ class Incident(MongoModel):
             'confidence_score': confidence_score,
             'is_reviewed': False,
             'reviewer_notes': None,
+            'student_id': student_id,  # Student identified through seating plan
+            'student_name': student_name,
+            'roll_number': roll_number,
+            'seat_number': seat_number,  # Seat where incident occurred
             'created_at': datetime.utcnow()
         }
 
@@ -230,17 +247,19 @@ class SeatingPlan(MongoModel):
         self.collection.create_index("classroom_name")
         self.collection.create_index("exam_session_id")
     
-    def create_seating_plan(self, classroom_name, rows, columns, seats_data=None, exam_session_id=None, room_number=None, total_seats=None):
+    def create_seating_plan(self, classroom_name, rows, columns, seats_data=None, exam_session_id=None, room_number=None, total_seats=None, image_path=None, is_image_based=False):
         """Create a new seating plan
         
         Args:
             classroom_name: Name of the classroom
             rows: Number of rows (0 for image-based flexible layout)
             columns: Number of columns (0 for image-based flexible layout)
-            seats_data: List of seat objects
+            seats_data: List of seat objects with optional pixel coordinates for image-based plans
             exam_session_id: ID of the exam session this plan belongs to (optional)
             room_number: Room number for display (optional)
             total_seats: Total number of seats (optional, overrides calculated value)
+            image_path: Path to the classroom image (for image-based plans)
+            is_image_based: Whether this is an image-based seating plan
         """
         seats_data = seats_data or []
         occupied_seats = len([
@@ -261,7 +280,9 @@ class SeatingPlan(MongoModel):
             'room_number': room_number,  # Room number for display (e.g., "Room 101")
             'rows': rows,
             'columns': columns,
-            'seats': seats_data,  # List of seat objects
+            'is_image_based': is_image_based,  # Whether this plan uses image-based seating
+            'image_path': image_path,  # Path to the classroom image
+            'seats': seats_data,  # List of seat objects with pixel coordinates for image-based plans
             'total_seats': computed_total,
             'occupied_seats': occupied_seats,
             'created_at': datetime.utcnow(),
@@ -307,6 +328,76 @@ class SeatingPlan(MongoModel):
         except:
             return False
     
+    def find_student_by_seat(self, plan_id, seat_number):
+        """Find student assigned to a specific seat in a seating plan"""
+        try:
+            plan = self.find_by_id(plan_id)
+            if not plan:
+                return None
+            
+            for seat in plan.get('seats', []):
+                if str(seat.get('seat_number', '')) == str(seat_number):
+                    return {
+                        'seat_number': seat.get('seat_number'),
+                        'student_name': seat.get('student_name'),
+                        'roll_number': seat.get('roll_number'),
+                        'pixel_x': seat.get('pixel_x'),
+                        'pixel_y': seat.get('pixel_y'),
+                        'norm_x': seat.get('norm_x'),
+                        'norm_y': seat.get('norm_y')
+                    }
+            return None
+        except:
+            return None
+    
+    def find_student_by_pixel_proximity(self, plan_id, pixel_x, pixel_y, tolerance_pixels=50):
+        """Find student at or near pixel coordinates (for image-based seating plans)
+        
+        Args:
+            plan_id: ID of the seating plan
+            pixel_x: X coordinate of the incident (in original image pixels)
+            pixel_y: Y coordinate of the incident (in original image pixels)
+            tolerance_pixels: Maximum distance in pixels to consider as "at seat"
+        
+        Returns:
+            Student info if found, otherwise None
+        """
+        try:
+            plan = self.find_by_id(plan_id)
+            if not plan or not plan.get('is_image_based'):
+                return None
+            
+            seats = plan.get('seats', [])
+            closest_seat = None
+            closest_distance = float('inf')
+            
+            # Find the closest seat to the pixel coordinates
+            for seat in seats:
+                seat_x = seat.get('pixel_x', 0)
+                seat_y = seat.get('pixel_y', 0)
+                
+                # Calculate Euclidean distance
+                distance = ((seat_x - pixel_x) ** 2 + (seat_y - pixel_y) ** 2) ** 0.5
+                
+                if distance < closest_distance:
+                    closest_distance = distance
+                    closest_seat = seat
+            
+            # If closest seat is within tolerance and has a student, return it
+            if closest_seat and closest_distance <= tolerance_pixels and closest_seat.get('student_name'):
+                return {
+                    'seat_number': closest_seat.get('seat_number'),
+                    'student_name': closest_seat.get('student_name'),
+                    'roll_number': closest_seat.get('roll_number'),
+                    'pixel_x': closest_seat.get('pixel_x'),
+                    'pixel_y': closest_seat.get('pixel_y'),
+                    'distance_pixels': closest_distance
+                }
+            
+            return None
+        except:
+            return None
+    
     def delete_seating_plan(self, plan_id):
         """Delete a seating plan"""
         try:
@@ -314,3 +405,5 @@ class SeatingPlan(MongoModel):
             return result.deleted_count > 0
         except:
             return False
+
+

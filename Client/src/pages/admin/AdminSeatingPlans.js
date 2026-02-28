@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import Card from '../../components/ui/Card';
 import Button from '../../components/ui/Button';
 import Input from '../../components/ui/Input';
@@ -6,6 +6,9 @@ import LoadingSpinner from '../../components/ui/LoadingSpinner';
 import adminService from '../../api/services/adminService';
 import { API_CONFIG } from '../../api/config/apiConfig';
 import { useNotification } from '../../context/notification/NotificationContext';
+import ImageSeatMarker from '../../components/seating/ImageSeatMarker';
+import ImageSeatViewer from '../../components/seating/ImageSeatViewer';
+import StudentAssignmentModal from '../../components/seating/StudentAssignmentModal';
 import {
   renderSeatingGrid,
   renderSeatingEditor,
@@ -26,18 +29,6 @@ function AdminSeatingPlans() {
 
   // Image-based seating plan state
   const [useImageMode, setUseImageMode] = useState(false);
-  const [classroomImage, setClassroomImage] = useState(null);
-  const [imagePreview, setImagePreview] = useState(null);
-  const [studentFile, setStudentFile] = useState(null);
-  const [parsedStudents, setParsedStudents] = useState([]);
-  const [seatCoordinates, setSeatCoordinates] = useState([]);
-  const [selectedCoordIndex, setSelectedCoordIndex] = useState(null);
-  const [uploadingFile, setUploadingFile] = useState(false);
-  const imageCanvasRef = useRef(null);
-  const imageContainerRef = useRef(null);
-  const [overlayBox, setOverlayBox] = useState(null);
-  const [showImageOverlay, setShowImageOverlay] = useState(false);
-  const [imageSeatsSaved, setImageSeatsSaved] = useState(false); // Track if image seats  are saved
 
   const [formData, setFormData] = useState({
     classroom_name: '',
@@ -51,6 +42,13 @@ function AdminSeatingPlans() {
   const [studentName, setStudentName] = useState('');
   const [rollNumber, setRollNumber] = useState('');
 
+  // New image-based seating modal state
+  const [showStudentAssignmentModal, setShowStudentAssignmentModal] = useState(false);
+  const [selectedPlanForAssignment, setSelectedPlanForAssignment] = useState(null);
+  const [showImageMarkerModal, setShowImageMarkerModal] = useState(false);
+  const [selectedPlanForMarking, setSelectedPlanForMarking] = useState(null);
+  const [creatingImagePlan, setCreatingImagePlan] = useState(false);
+
   useEffect(() => {
     fetchSeatingPlans();
   }, []);
@@ -58,8 +56,8 @@ function AdminSeatingPlans() {
   const getFullImageUrl = (imagePath) => {
     if (!imagePath) return '';
     if (imagePath.startsWith('http')) return imagePath;
-    // API_CONFIG.BASE_URL is like http://127.0.0.1:5000/api -> remove trailing '/api'
-    const base = API_CONFIG.BASE_URL.replace(/\/api\/?$/i, '').replace(/\/$/,'');
+    // Keep /api in the path for uploads route  
+    const base = API_CONFIG.BASE_URL.replace(/\/$/, '');
     return `${base}${imagePath.startsWith('/') ? '' : '/'}${imagePath}`;
   };
 
@@ -96,383 +94,44 @@ function AdminSeatingPlans() {
 
   // ============ IMAGE MODE HANDLERS ============
 
-  const handleImageUpload = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-
-    // Validate file type
-    if (!file.type.startsWith('image/')) {
-      addNotification('error', 'Please select a valid image file');
-      return;
-    }
-
-    // Create preview
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      setImagePreview(event.target.result);
-      setClassroomImage(file);
-      setSeatCoordinates([]);
-      setSelectedCoordIndex(null);
-      // Open full-screen image overlay for seat selection
-      setShowImageOverlay(true);
-    };
-    reader.readAsDataURL(file);
-  };
-
-  const handleImageClick = (e) => {
-    if (!imageCanvasRef.current || !imageContainerRef.current) return;
-
-    const imgEl = imageCanvasRef.current;
-    const containerEl = imageContainerRef.current;
-    
-    // Get image position relative to container
-    const imgRect = imgEl.getBoundingClientRect();
-    const containerRect = containerEl.getBoundingClientRect();
-    
-    // Calculate click position relative to image element (account for element position within container)
-    const relativeX = e.clientX - imgRect.left;
-    const relativeY = e.clientY - imgRect.top;
-
-    // Only process clicks inside the image bounds
-    if (relativeX < 0 || relativeY < 0 || relativeX > imgRect.width || relativeY > imgRect.height) {
-      addNotification('warning', 'Click inside the image area');
-      return;
-    }
-
-    // Normalize coordinates relative to displayed image dimensions (0..1)
-    // This is independent of screen resolution
-    const normX = relativeX / imgRect.width;
-    const normY = relativeY / imgRect.height;
-
-    // Calculate pixel coordinates relative to the image's ORIGINAL resolution
-    // These are the absolute coordinates that will be stored in database
-    const naturalW = imgEl.naturalWidth || imgRect.width;
-    const naturalH = imgEl.naturalHeight || imgRect.height;
-    const pixelX = Math.round(normX * naturalW);
-    const pixelY = Math.round(normY * naturalH);
-
-    // Check for duplicate selections (in pixel space for consistency)
-    const minDistPixels = Math.max(20, Math.round(Math.min(naturalW, naturalH) * 0.02));
-    const isDuplicate = seatCoordinates.some(
-      coord => Math.hypot((coord.pixel_x || 0) - pixelX, (coord.pixel_y || 0) - pixelY) < minDistPixels
-    );
-
-    if (isDuplicate) {
-      addNotification('warning', 'Seat already selected at this location');
-      return;
-    }
-
-    // Prepare seat data
-    const seatNumberDefault = seatCoordinates.length + 1;
-    let student_name = '';
-    let roll_number = '';
-    let actual_seat_no = seatNumberDefault;
-
-    // If parsed students exist, ask admin which Seat No (from file) to assign to this clicked position
-    if (parsedStudents && parsedStudents.length > 0) {
-      const assignedNumbers = seatCoordinates.map(c => parseInt(c.seat_number, 10));
-      // find first unassigned seat number from parsedStudents
-      const firstUnassigned = parsedStudents.map(s => parseInt(s.seat_number, 10)).find(n => !assignedNumbers.includes(n));
-      const suggested = firstUnassigned || seatNumberDefault;
-      const input = window.prompt('Enter Seat No to assign to this clicked position (from uploaded file):', String(suggested));
-      if (input !== null && input.trim() !== '') {
-        const chosen = parseInt(input, 10);
-        if (!isNaN(chosen)) {
-          actual_seat_no = chosen;
-          const match = parsedStudents.find(s => parseInt(s.seat_number, 10) === chosen);
-          if (match) {
-            student_name = match.student_name;
-            roll_number = match.roll_number;
-          }
-        }
-      }
-    }
-
-    const newCoordinate = {
-      // Store pixel coordinates in original image resolution (database values)
-      pixel_x: pixelX,
-      pixel_y: pixelY,
-      // Store normalized coordinates for SVG display (0..1)
-      norm_x: normX,
-      norm_y: normY,
-      seat_number: actual_seat_no,
-      student_name: student_name,
-      roll_number: roll_number,
-    };
-
-    setSeatCoordinates(prev => [...prev, newCoordinate]);
-    setSelectedCoordIndex(seatCoordinates.length);
-    addNotification('success', `Seat ${actual_seat_no} marked at pixel (${pixelX}, ${pixelY})`);
-  };
-
-  const clearAllCoordinates = () => {
-    setSeatCoordinates([]);
-    setSelectedCoordIndex(null);
-    addNotification('info', 'All seat selections cleared');
-  };
-
-  const closeOverlay = () => {
-    setShowImageOverlay(false);
-  };
-
-  useEffect(() => {
-    // Prevent zoom and pan on the image container
-    const handlePreventZoom = (e) => {
-      // Prevent pinch-to-zoom on touch devices
-      if (e.touches && e.touches.length > 1) {
-        e.preventDefault();
-      }
-      // Prevent mouse wheel zoom (Ctrl/Cmd + Scroll)
-      if ((e.ctrlKey || e.metaKey) && e.deltaY) {
-        e.preventDefault();
-      }
-    };
-
-    const containerEl = imageContainerRef.current;
-    if (containerEl && showImageOverlay) {
-      containerEl.addEventListener('wheel', handlePreventZoom, { passive: false });
-      containerEl.addEventListener('touchmove', handlePreventZoom, { passive: false });
-      
-      // Prevent context menu (right-click) on image
-      const handleContextMenu = (e) => e.preventDefault();
-      containerEl.addEventListener('contextmenu', handleContextMenu);
-      
-      return () => {
-        containerEl.removeEventListener('wheel', handlePreventZoom);
-        containerEl.removeEventListener('touchmove', handlePreventZoom);
-        containerEl.removeEventListener('contextmenu', handleContextMenu);
-      };
-    }
-  }, [showImageOverlay]);
-
-  useEffect(() => {
-    // Update overlay box on window resize/scroll to keep SVG synchronized
-    const handleResize = () => {
-      if (imageCanvasRef.current && imageContainerRef.current) {
-        const imgRect = imageCanvasRef.current.getBoundingClientRect();
-        const containerRect = imageContainerRef.current.getBoundingClientRect();
-        const left = imgRect.left - containerRect.left;
-        const top = imgRect.top - containerRect.top;
-        setOverlayBox({ left, top, width: imgRect.width, height: imgRect.height });
-      }
-    };
-
-    window.addEventListener('resize', handleResize);
-    window.addEventListener('scroll', handleResize, true);
-    
-    return () => {
-      window.removeEventListener('resize', handleResize);
-      window.removeEventListener('scroll', handleResize, true);
-    };
-  }, [showImageOverlay]);
-
-  const handleStudentFileUpload = async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-
-    // Validate file type
-    const validTypes = ['text/csv', 'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'application/pdf'];
-    const fileExt = file.name.split('.').pop().toLowerCase();
-    const validExts = ['csv', 'xlsx', 'xls', 'pdf'];
-
-    if (!validExts.includes(fileExt) && !validTypes.includes(file.type)) {
-      addNotification('error', 'Please upload a CSV, Excel, or PDF file');
-      return;
-    }
-
-    setUploadingFile(true);
-    try {
-      // Create FormData and send to backend
-      const formDataFD = new FormData();
-      formDataFD.append('file', file);
-
-      const response = await fetch(`${API_CONFIG.BASE_URL}/admin/seating-plans/students/parse`, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${localStorage.getItem('access_token')}`,
-        },
-        body: formDataFD,
-      });
-
-      // Check response status first
-      if (!response.ok) {
-        const errorText = await response.text();
-        let errorMsg = 'Failed to parse student file';
-        try {
-          const errorData = JSON.parse(errorText);
-          errorMsg = errorData.message || errorMsg;
-        } catch (e) {
-          console.error('Response text:', errorText);
-        }
-        addNotification('error', errorMsg);
-        return;
-      }
-
-      const data = await response.json();
-
-      setParsedStudents(data.students);
-      setStudentFile(file);
-      addNotification('success', `Loaded ${data.count} students from file`);
-
-      // Auto-map students to already selected seat coordinates based on seat_number
-      if (data.students && seatCoordinates.length > 0) {
-        const mappedSeats = seatCoordinates.map((coord) => {
-          // Find student data that matches this seat number
-          const studentData = data.students.find(s => parseInt(s.seat_number, 10) === parseInt(coord.seat_number, 10));
-          if (studentData) {
-            return {
-              ...coord,
-              student_name: studentData.student_name,
-              roll_number: studentData.roll_number,
-            };
-          }
-          return coord;
-        });
-        setSeatCoordinates(mappedSeats);
-        addNotification('success', 'Students automatically mapped to selected seats based on Seat No');
-      }
-    } catch (error) {
-      console.error('Student file upload error:', error);
-      addNotification('error', 'Error uploading student file. Please try again.');
-    } finally {
-      setUploadingFile(false);
-    }
-  };
-
-  const removeCoordinate = (index) => {
-    setSeatCoordinates(seatCoordinates.filter((_, i) => i !== index));
-    setSelectedCoordIndex(null);
-    addNotification('info', 'Seat removed');
-  };
-
-  const handleSaveImageSeats = () => {
-    try {
-      if (!imagePreview || seatCoordinates.length === 0) {
-        addNotification('error', 'Please select image and click on seats');
-        return;
-      }
-
-      if (!formData.classroom_name.trim()) {
-        addNotification('error', 'Please enter room number');
-        return;
-      }
-
-      // Validate that we have at least the image and seats selected
-      if (!classroomImage) {
-        addNotification('error', 'No image selected');
-        return;
-      }
-
-      addNotification('success', 'Seats saved! You can now upload a student file or generate the seating plan.');
-      setImageSeatsSaved(true);
-      setShowImageOverlay(false); // Auto-close the overlay
-    } catch (error) {
-      console.error('Save image seats error:', error);
-      addNotification('error', 'Error saving seats. Please try again.');
-    }
-  };
-
-  const handleCreateFromImage = async () => {
-    try {
-      if (!imagePreview || seatCoordinates.length === 0) {
-        addNotification('error', 'Please select image and click on seats');
-        return;
-      }
-
-      if (!formData.classroom_name.trim()) {
-        addNotification('error', 'Please enter room number');
-        return;
-      }
-
-      setLoading(true);
-
-      // Upload image first
-      let imagePath = imagePreview;
-      if (classroomImage) {
-        const formDataImage = new FormData();
-        formDataImage.append('image', classroomImage);
-
-        const imageResponse = await fetch(`${API_CONFIG.BASE_URL}/admin/seating-plans/image/upload`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${localStorage.getItem('access_token')}`,
-          },
-          body: formDataImage,
-        });
-
-        // Check response status first
-        if (!imageResponse.ok) {
-          const errorText = await imageResponse.text();
-          let errorMsg = 'Failed to upload image';
-          try {
-            const errorData = JSON.parse(errorText);
-            errorMsg = errorData.message || errorMsg;
-          } catch (e) {
-            console.error('Image upload response:', errorText);
-          }
-          addNotification('error', errorMsg);
-          return;
-        }
-
-        const imageData = await imageResponse.json();
-        imagePath = imageData.image_path;
-      }
-
-      // Create seating plan from image (dynamic rows/columns based on seat count)
-      const totalSeats = seatCoordinates.length;
-      const createPlanResponse = await fetch(`${API_CONFIG.BASE_URL}/admin/seating-plans/create-from-image`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${localStorage.getItem('access_token')}`,
-        },
-        body: JSON.stringify({
-          classroom_name: formData.classroom_name,
-          room_number: formData.room_number || undefined,  // Optional room number
-          total_seats: totalSeats,
-          image_path: imagePath,
-          seats: seatCoordinates,
-        }),
-      });
-
-      // Check response status first
-      if (!createPlanResponse.ok) {
-        const errorText = await createPlanResponse.text();
-        let errorMsg = 'Failed to create seating plan';
-        try {
-          const errorData = JSON.parse(errorText);
-          errorMsg = errorData.message || errorMsg;
-        } catch (e) {
-          console.error('Create plan response:', errorText);
-        }
-        addNotification('error', errorMsg);
-        return;
-      }
-
-      const planData = await createPlanResponse.json();
-
-      addNotification('success', 'Seating plan generated successfully');
-      resetImageMode();
-      fetchSeatingPlans();
-    } catch (error) {
-      console.error('Create from image error:', error);
-      addNotification('error', 'Error creating seating plan. Please try again.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
   const resetImageMode = () => {
     setUseImageMode(false);
-    setClassroomImage(null);
-    setImagePreview(null);
-    setStudentFile(null);
-    setParsedStudents([]);
-    setSeatCoordinates([]);
-    setSelectedCoordIndex(null);
-    setFormData({ classroom_name: '' });
-    setShowImageOverlay(false);
-    setImageSeatsSaved(false);
+    setFormData({ classroom_name: '', room_number: '', total_seats: 1 });
+  };
+
+  const handleStartImageWorkflow = async () => {
+    try {
+      if (!formData.classroom_name.trim()) {
+        addNotification('error', 'Please enter room number');
+        return;
+      }
+
+      setCreatingImagePlan(true);
+
+      const response = await adminService.createSeatingPlan({
+        classroom_name: formData.classroom_name.trim(),
+        room_number: formData.room_number?.trim() || undefined,
+        total_seats: 1,
+        seats: [],
+        is_image_based: true,
+      });
+
+      const newPlan = response?.plan;
+      if (!newPlan?.id) {
+        addNotification('error', 'Failed to create seating plan');
+        return;
+      }
+
+      await fetchSeatingPlans();
+      setSelectedPlanForMarking(newPlan);
+      setShowImageMarkerModal(true);
+      setUseImageMode(false);
+      setFormData({ classroom_name: '', room_number: '', total_seats: 1 });
+    } catch (error) {
+      addNotification('error', error.response?.data?.message || 'Failed to start image seating workflow');
+    } finally {
+      setCreatingImagePlan(false);
+    }
   };
 
   // ============ TRADITIONAL MODE HANDLERS ============
@@ -749,117 +408,29 @@ function AdminSeatingPlans() {
                   />
                 </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-900 dark:text-white mb-2">
-                    Upload Classroom Image <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    type="file"
-                    accept="image/*,.jpg,.jpeg"
-                    onChange={handleImageUpload}
-                    className="w-full border border-gray-300 dark:border-gray-600 rounded-lg p-2 text-sm"
-                  />
+                <div className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 p-4">
+                  <p className="text-sm text-blue-900 dark:text-blue-200">
+                    Next step will open the guided flow:
+                  </p>
+                  <ul className="mt-2 text-sm text-blue-800 dark:text-blue-300 list-disc list-inside space-y-1">
+                    <li>Upload classroom image</li>
+                    <li>Mark seat positions and save</li>
+                    <li>Assign students manually or by CSV</li>
+                  </ul>
                 </div>
 
-                {imagePreview && !imageSeatsSaved && (
-                  <div className="border-2 border-dashed border-blue-400 dark:border-blue-600 rounded-lg p-3 bg-blue-50 dark:bg-blue-900/20">
-                    <p className="text-xs font-medium text-blue-900 dark:text-blue-300 mb-2">
-                      Click on each seat in the image ({seatCoordinates.length} selected)
-                    </p>
-                        <div ref={imageContainerRef} className="relative bg-white rounded overflow-hidden max-h-96">
-                          <img
-                            ref={imageCanvasRef}
-                            src={imagePreview}
-                            alt="Classroom"
-                            onClick={handleImageClick}
-                            onLoad={() => {
-                              // Image loaded - SVG overlay will use percentage positioning
-                            }}
-                            className="w-full cursor-crosshair"
-                          />
-                          <svg className="absolute top-0 left-0 w-full h-full pointer-events-none" width="100%" height="100%">
-                            {seatCoordinates.map((coord, idx) => (
-                              <g key={idx}>
-                                <circle cx={`${((coord.norm_x || 0) * 100).toFixed(2)}%`} cy={`${((coord.norm_y || 0) * 100).toFixed(2)}%`} r="6" fill="rgba(59,130,246,0.35)" />
-                                <text x={`${((coord.norm_x || 0) * 100).toFixed(2)}%`} y={`${((coord.norm_y || 0) * 100).toFixed(2)}%`} textAnchor="middle" dy="0.35em" fill="#0b5fff" style={{ fontSize: '10px', fontWeight: '600' }}>{coord.seat_number || idx + 1}</text>
-                              </g>
-                            ))}
-                          </svg>
-                        </div>
-
-                    {/* Selected list */}
-                    {seatCoordinates.length > 0 && (
-                      <div className="mt-3 border border-gray-200 rounded-lg p-3 max-h-40 overflow-y-auto">
-                        {seatCoordinates.map((coord, idx) => (
-                          <div key={idx} className="flex justify-between items-center p-2">
-                            <div>
-                              <div className="font-medium">Seat {coord.seat_number || idx + 1}</div>
-                              <div className="text-xs text-gray-500">{coord.student_name || ''} {coord.roll_number ? `(${coord.roll_number})` : ''}</div>
-                            </div>
-                            <button onClick={() => removeCoordinate(idx)} className="text-red-500">Remove</button>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-
-                    {/* Student File Upload + Parsed summary */}
-                    <div className="mt-3">
-                      <input type="file" accept=".csv,.xlsx,.xls,.pdf" onChange={handleStudentFileUpload} />
-                      {parsedStudents.length > 0 && <div className="mt-2 text-sm text-green-600">{parsedStudents.length} students loaded</div>}
-                    </div>
-
-                    <div className="mt-3 flex gap-2">
-                      <Button onClick={() => setShowImageOverlay(true)} disabled={!imagePreview} variant="outline">Open Full Screen</Button>
-                      <Button onClick={resetImageMode} variant="outline">Cancel</Button>
-                    </div>
-                  </div>
-                )}
-
-                {/* Upload Seating Plan Section - appears after seats are saved */}
-                {imageSeatsSaved && imagePreview && (
-                  <div className="border-2 border-dashed border-green-400 dark:border-green-600 rounded-lg p-4 bg-green-50 dark:bg-green-900/20 space-y-3">
-                    <div className="flex items-center gap-2 mb-3">
-                      <span className="text-2xl">✅</span>
-                      <p className="font-semibold text-green-900 dark:text-green-300">
-                        Seats Saved! Room: {formData.classroom_name}
-                      </p>
-                    </div>
-                    
-                    <div>
-                      <label className="block text-sm font-medium text-gray-900 dark:text-white mb-2">
-                        Upload Seating Plan <span className="text-gray-500">(Optional)</span>
-                      </label>
-                      <p className="text-xs text-gray-600 dark:text-gray-400 mb-2">
-                        Upload a CSV/Excel file with student data (Student Name, Roll No, Seat No)
-                      </p>
-                      <input
-                        type="file"
-                        accept=".csv,.xlsx,.xls,.pdf"
-                        onChange={handleStudentFileUpload}
-                        disabled={uploadingFile}
-                        className="w-full border border-gray-300 dark:border-gray-600 rounded-lg p-2 text-sm"
-                      />
-                      {parsedStudents.length > 0 && (
-                        <div className="mt-2 text-sm text-green-600 dark:text-green-400">
-                          ✓ {parsedStudents.length} students loaded
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="flex gap-2 pt-2">
-                      <Button
-                        onClick={handleCreateFromImage}
-                        disabled={!formData.classroom_name.trim() || seatCoordinates.length === 0 || uploadingFile}
-                        className="flex-1"
-                      >
-                        Generate Seating Plan
-                      </Button>
-                      <Button variant="outline" onClick={resetImageMode} className="flex-1">
-                        Cancel
-                      </Button>
-                    </div>
-                  </div>
-                )}
+                <div className="flex gap-2">
+                  <Button
+                    onClick={handleStartImageWorkflow}
+                    disabled={!formData.classroom_name.trim() || creatingImagePlan}
+                    className="flex-1"
+                  >
+                    {creatingImagePlan ? <LoadingSpinner size="small" /> : 'Continue to Image Seat Marker'}
+                  </Button>
+                  <Button variant="outline" onClick={resetImageMode} className="flex-1">
+                    Cancel
+                  </Button>
+                </div>
               </div>
             ) : (
               
@@ -1068,7 +639,7 @@ function AdminSeatingPlans() {
                         </p>
                       )}
                     </div>
-                    <div className="flex gap-1 flex-shrink-0">
+                    <div className="flex gap-1 flex-shrink-0 flex-wrap">
                       <Button 
                         variant="outline"
                         onClick={() => handleView(plan)}
@@ -1076,6 +647,21 @@ function AdminSeatingPlans() {
                       >
                         View
                       </Button>
+                      {plan.image_path && (
+                        <>
+                          <Button 
+                            variant="secondary"
+                            onClick={() => {
+                              setSelectedPlanForMarking(plan);
+                              setShowImageMarkerModal(true);
+                            }}
+                            className="text-xs py-1 px-2"
+                            title="Edit marked seat positions"
+                          >
+                            📍 Seats
+                          </Button>
+                        </>
+                      )}
                       <Button 
                         variant="secondary"
                         onClick={() => handleEdit(plan)}
@@ -1103,7 +689,7 @@ function AdminSeatingPlans() {
       {/* View Modal */}
       {currentPlan && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-          <Card className="w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+          <Card className="w-full max-w-4xl max-h-[90vh] overflow-y-auto">
             <Card.Header className="flex items-center justify-between">
               <div className="flex items-center gap-4">
                 <div className="w-12 h-12 rounded-full bg-blue-50 dark:bg-blue-900 flex items-center justify-center text-blue-700 dark:text-blue-200 font-bold text-lg">
@@ -1113,6 +699,9 @@ function AdminSeatingPlans() {
                   <div className="text-lg font-semibold text-gray-900 dark:text-white">{currentPlan.classroom_name || 'Room'}</div>
                   {currentPlan.room_number && (
                     <div className="text-sm text-gray-600 dark:text-gray-400">🏢 {currentPlan.room_number}</div>
+                  )}
+                  {currentPlan.image_path && (
+                    <div className="text-xs text-blue-600 dark:text-blue-400 mt-1">📸 Image-based plan</div>
                   )}
                 </div>
               </div>
@@ -1124,231 +713,154 @@ function AdminSeatingPlans() {
               </button>
             </Card.Header>
             <Card.Content className="space-y-4">
-              {/* Room header is displayed above in Card.Header */}
-
-              <div className="grid grid-cols-1 gap-4">
-                <div>
-                  <p className="text-sm text-gray-600 dark:text-gray-400">Total Seats</p>
-                  <p className="text-2xl font-bold text-gray-900 dark:text-white">
-                    {currentPlan.total_seats || (currentPlan.seats ? currentPlan.seats.length : 0)}
-                  </p>
-                </div>
-              </div>
-
-              <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-4 bg-gray-50 dark:bg-gray-900">
-                <h3 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">Seating Arrangement</h3>
-                <div className="overflow-x-auto max-h-96 overflow-y-auto">
-                  {renderSeatingGrid(currentPlan)}
-                </div>
-              </div>
-
-              {/* Student Details Table */}
-              <div className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
-                <div className="bg-gray-100 dark:bg-gray-800 p-3 border-b border-gray-200 dark:border-gray-700">
-                  <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
-                    Assigned Students ({(currentPlan.seats || []).filter(s => s.student_name).length})
-                  </h3>
-                </div>
-                <div className="max-h-64 overflow-y-auto">
-                  {(currentPlan.seats || []).filter(s => s.student_name || s.studentName).length > 0 ? (
-                    <table className="w-full text-sm">
-                      <thead className="sticky top-0 bg-gray-100 dark:bg-gray-800">
-                        <tr className="border-b border-gray-200 dark:border-gray-700">
-                          <th className="px-4 py-2 text-left font-semibold text-gray-900 dark:text-white">Seat Number</th>
-                          <th className="px-4 py-2 text-left font-semibold text-gray-900 dark:text-white">Student Name</th>
-                          <th className="px-4 py-2 text-left font-semibold text-gray-900 dark:text-white">Roll Number</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(currentPlan.seats || [])
-                          .filter(s => s.student_name || s.studentName)
-                          .sort((a, b) => {
-                            const aNo = a.seat_number ? parseInt(a.seat_number, 10) : Number.MAX_SAFE_INTEGER;
-                            const bNo = b.seat_number ? parseInt(b.seat_number, 10) : Number.MAX_SAFE_INTEGER;
-                            return aNo - bNo;
-                          })
-                          .map((seat, idx) => {
-                            const seatLabel = seat.seat_number || `Seat ${idx + 1}`;
-
-                            return (
-                              <tr 
-                                key={idx}
-                                className="border-b border-gray-200 dark:border-gray-700 hover:bg-blue-50 dark:hover:bg-blue-900/20"
-                              >
-                                <td className="px-4 py-2 font-semibold text-gray-900 dark:text-white">{seatLabel}</td>
-                                <td className="px-4 py-2 text-gray-900 dark:text-white">{seat.student_name || seat.studentName}</td>
-                                <td className="px-4 py-2 text-gray-600 dark:text-gray-400">{seat.roll_number || seat.rollNumber}</td>
-                              </tr>
-                            );
-                          })}
-                      </tbody>
-                    </table>
-                  ) : (
-                    <div className="p-4 text-center text-gray-500 dark:text-gray-400">
-                      No students assigned yet
+              {/* Image-based seating view */}
+              {currentPlan.image_path ? (
+                <ImageSeatViewer
+                  plan={currentPlan}
+                  onEdit={() => {
+                    setSelectedPlanForMarking(currentPlan);
+                    setShowImageMarkerModal(true);
+                    setCurrentPlan(null); // Close view modal
+                  }}
+                  onClose={handleCloseViewer}
+                />
+              ) : (
+                /* Traditional grid view for non-image plans */
+                <>
+                  <div className="grid grid-cols-1 gap-4">
+                    <div>
+                      <p className="text-sm text-gray-600 dark:text-gray-400">Total Seats</p>
+                      <p className="text-2xl font-bold text-gray-900 dark:text-white">
+                        {currentPlan.total_seats || (currentPlan.seats ? currentPlan.seats.length : 0)}
+                      </p>
                     </div>
-                  )}
-                </div>
-              </div>
+                  </div>
 
-              <div className="mt-3 space-y-2">
-                <Button onClick={handleCloseViewer} className="w-full">
-                  Close
-                </Button>
-              </div>
+                  <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-4 bg-gray-50 dark:bg-gray-900">
+                    <h3 className="text-sm font-semibold text-gray-900 dark:text-white mb-3">Seating Arrangement</h3>
+                    <div className="overflow-x-auto max-h-96 overflow-y-auto">
+                      {renderSeatingGrid(currentPlan)}
+                    </div>
+                  </div>
+
+                  {/* Student Details Table */}
+                  <div className="border border-gray-200 dark:border-gray-700 rounded-lg overflow-hidden">
+                    <div className="bg-gray-100 dark:bg-gray-800 p-3 border-b border-gray-200 dark:border-gray-700">
+                      <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
+                        Assigned Students ({(currentPlan.seats || []).filter(s => s.student_name).length})
+                      </h3>
+                    </div>
+                    <div className="max-h-64 overflow-y-auto">
+                      {(currentPlan.seats || []).filter(s => s.student_name || s.studentName).length > 0 ? (
+                        <table className="w-full text-sm">
+                          <thead className="sticky top-0 bg-gray-100 dark:bg-gray-800">
+                            <tr className="border-b border-gray-200 dark:border-gray-700">
+                              <th className="px-4 py-2 text-left font-semibold text-gray-900 dark:text-white">Seat Number</th>
+                              <th className="px-4 py-2 text-left font-semibold text-gray-900 dark:text-white">Student Name</th>
+                              <th className="px-4 py-2 text-left font-semibold text-gray-900 dark:text-white">Roll Number</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {(currentPlan.seats || [])
+                              .filter(s => s.student_name || s.studentName)
+                              .sort((a, b) => {
+                                const aNo = a.seat_number ? parseInt(a.seat_number, 10) : Number.MAX_SAFE_INTEGER;
+                                const bNo = b.seat_number ? parseInt(b.seat_number, 10) : Number.MAX_SAFE_INTEGER;
+                                return aNo - bNo;
+                              })
+                              .map((seat, idx) => {
+                                const seatLabel = seat.seat_number || `Seat ${idx + 1}`;
+
+                                return (
+                                  <tr 
+                                    key={idx}
+                                    className="border-b border-gray-200 dark:border-gray-700 hover:bg-blue-50 dark:hover:bg-blue-900/20"
+                                  >
+                                    <td className="px-4 py-2 font-semibold text-gray-900 dark:text-white">{seatLabel}</td>
+                                    <td className="px-4 py-2 text-gray-900 dark:text-white">{seat.student_name || seat.studentName}</td>
+                                    <td className="px-4 py-2 text-gray-600 dark:text-gray-400">{seat.roll_number || seat.rollNumber}</td>
+                                  </tr>
+                                );
+                              })}
+                          </tbody>
+                        </table>
+                      ) : (
+                        <div className="p-4 text-center text-gray-500 dark:text-gray-400">
+                          No students assigned yet
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="mt-3 space-y-2">
+                    <Button onClick={handleCloseViewer} className="w-full">
+                      Close
+                    </Button>
+                  </div>
+                </>
+              )}
             </Card.Content>
           </Card>
         </div>
       )}
-      {/* Full-screen Image Overlay for precise clicking - Fixed Container with No Zoom/Pan */}
-      {showImageOverlay && imagePreview && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80">
-          {/* Close on background click disabled - must use button */}
-          <div className="relative bg-white rounded-lg shadow-2xl w-[98%] h-[98%] max-w-7xl max-h-[98vh] p-4 flex flex-col overflow-hidden">
-            {/* Header Controls */}
-            <div className="flex justify-between items-center mb-3 flex-shrink-0 border-b border-gray-200 dark:border-gray-700 pb-3">
-              <div className="flex items-center gap-2">
-                <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Select Seats - Full Screen</h3>
-                <span className="text-sm text-gray-500 dark:text-gray-400">({seatCoordinates.length} selected)</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <Button 
-                  variant="outline" 
-                  onClick={clearAllCoordinates}
-                  className="text-sm"
-                >
-                  Clear All
-                </Button>
-                <Button 
-                  onClick={handleSaveImageSeats} 
-                  disabled={!formData.classroom_name.trim() || seatCoordinates.length === 0}
-                  className="text-sm"
-                >
-                  Save Seats
-                </Button>
-                <Button 
-                  variant="outline" 
-                  onClick={closeOverlay}
-                  className="text-sm"
-                >
-                  Close
-                </Button>
-              </div>
-            </div>
-
-            {/* Image Container - Fixed Aspect Ratio, No Zoom/Pan */}
-            <div 
-              ref={imageContainerRef} 
-              className="relative flex-1 bg-black flex items-center justify-center overflow-hidden"
-              style={{
-                position: 'relative',
-                width: '100%',
-                height: '100%'
-              }}
-            >
-              {/* Image - Static, No Zoom or Pan */}
-              <img
-                ref={imageCanvasRef}
-                src={imagePreview}
-                alt="Classroom Seating Map"
-                onClick={handleImageClick}
-                onLoad={() => {
-                  // Trigger any calculations needed when image loads
-                  // SVG overlay uses percentage positioning, so no need to update overlay box
-                }}
-                draggable={false}
-                style={{
-                  maxWidth: '100%',
-                  maxHeight: '100%',
-                  width: 'auto',
-                  height: 'auto',
-                  cursor: 'crosshair',
-                  userSelect: 'none',
-                  WebkitUserDrag: 'none',
-                  touchAction: 'none',
-                  display: 'block'
-                }}
-                className="select-none"
-              />
-
-              {/* SVG Overlay - Synchronized with Image */}
-              <svg 
-                className="absolute inset-0 pointer-events-none select-none" 
-                style={{
-                  position: 'absolute',
-                  top: 0,
-                  left: 0,
-                  width: '100%',
-                  height: '100%',
-                  overflow: 'visible'
-                }}
-                preserveAspectRatio="none"
+      {/* Image Seat Marker Modal */}
+      {showImageMarkerModal && selectedPlanForMarking && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50 overflow-y-auto">
+          <div className="bg-white dark:bg-gray-800 rounded-lg w-full max-w-4xl my-8">
+            <div className="sticky top-0 bg-white dark:bg-gray-800 border-b dark:border-gray-700 p-4 flex justify-between items-center">
+              <h2 className="text-lg font-bold text-gray-900 dark:text-white">
+                {selectedPlanForMarking.image_path ? 'Edit' : 'Create'} Seating Plan: {selectedPlanForMarking.classroom_name}
+              </h2>
+              <button
+                onClick={() => setShowImageMarkerModal(false)}
+                className="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 text-2xl"
               >
-                <defs>
-                  <style>{`
-                    .seat-circle {
-                      filter: drop-shadow(0 2px 4px rgba(0,0,0,0.3));
-                    }
-                    .seat-text {
-                      font-weight: 700;
-                      text-anchor: middle;
-                      dominant-baseline: middle;
-                      filter: drop-shadow(0 1px 2px rgba(0,0,0,0.5));
-                      pointer-events: none;
-                    }
-                  `}</style>
-                </defs>
-                {seatCoordinates.map((coord, idx) => {
-                  const percentX = ((coord.norm_x || 0) * 100).toFixed(2);
-                  const percentY = ((coord.norm_y || 0) * 100).toFixed(2);
-                  
-                  return (
-                    <g key={idx}>
-                      {/* Seat circle marker */}
-                      <circle 
-                        cx={`${percentX}%`}
-                        cy={`${percentY}%`}
-                        r="8"
-                        fill="rgba(59, 130, 246, 0.4)"
-                        stroke="#3b82f6"
-                        strokeWidth="2"
-                        className="seat-circle"
-                      />
-                      {/* Seat number label */}
-                      <text 
-                        x={`${percentX}%`}
-                        y={`${percentY}%`}
-                        textAnchor="middle"
-                        dominantBaseline="middle"
-                        fill="#0b5fff"
-                        fontSize="12"
-                        className="seat-text"
-                      >
-                        {coord.seat_number || idx + 1}
-                      </text>
-                    </g>
-                  );
-                })}
-              </svg>
+                ✕
+              </button>
             </div>
 
-            {/* Coordinate Info Panel */}
-            {seatCoordinates.length > 0 && (
-              <div className="mt-3 border-t border-gray-200 dark:border-gray-700 pt-3 max-h-24 overflow-y-auto flex-shrink-0">
-                <p className="text-xs text-gray-600 dark:text-gray-400 mb-2">Selected Seats (Pixel Coordinates):</p>
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  {seatCoordinates.map((coord, idx) => (
-                    <div key={idx} className="bg-blue-50 dark:bg-blue-900/20 p-2 rounded border border-blue-200 dark:border-blue-700">
-                      <div className="font-semibold text-blue-900 dark:text-blue-200">Seat {coord.seat_number || idx + 1}</div>
-                      <div className="text-gray-600 dark:text-gray-400">Pixel: ({coord.pixel_x}, {coord.pixel_y})</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
+            <div className="p-6 max-h-[calc(100vh-200px)] overflow-y-auto">
+              <ImageSeatMarker
+                planId={selectedPlanForMarking.id}
+                plan={selectedPlanForMarking}
+                onSeatsMarked={(updatedPlan) => {
+                  if (updatedPlan?.id) {
+                    setSeatingPlans((prevPlans) =>
+                      prevPlans.map((plan) => (plan.id === updatedPlan.id ? updatedPlan : plan))
+                    );
+                    setSelectedPlanForMarking(updatedPlan);
+                  }
+                }}
+                onNext={() => {
+                  // Move to student assignment
+                  setShowImageMarkerModal(false);
+                  setSelectedPlanForAssignment(selectedPlanForMarking);
+                  setShowStudentAssignmentModal(true);
+                }}
+              />
+            </div>
           </div>
         </div>
       )}
+
+      {/* Student Assignment Modal */}
+      <StudentAssignmentModal
+        planId={selectedPlanForAssignment?.id}
+        plan={selectedPlanForAssignment}
+        isOpen={showStudentAssignmentModal}
+        onClose={() => setShowStudentAssignmentModal(false)}
+        onAssignmentComplete={(updatedPlan) => {
+          if (updatedPlan?.id) {
+            setSeatingPlans((prevPlans) =>
+              prevPlans.map((plan) => (plan.id === updatedPlan.id ? updatedPlan : plan))
+            );
+            setSelectedPlanForAssignment(updatedPlan);
+            if (selectedPlanForMarking?.id === updatedPlan.id) {
+              setSelectedPlanForMarking(updatedPlan);
+            }
+          }
+        }}
+      />
     </div>
   );
 }

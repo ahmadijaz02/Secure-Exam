@@ -4,6 +4,8 @@ from email_validator import validate_email, EmailNotValidError
 from pymongo.errors import DuplicateKeyError
 from datetime import datetime
 import os
+import csv
+from werkzeug.utils import secure_filename
 from app.admin import bp
 from app import get_models
 
@@ -740,6 +742,9 @@ def create_seating_plan():
         classroom_name = data['classroom_name'].strip()
         total_seats = data['total_seats']
         seats_data = data.get('seats', [])
+        room_number = data.get('room_number', '').strip() or None
+        image_path = data.get('image_path')
+        is_image_based = bool(data.get('is_image_based', False))
         
         # Validate numeric fields
         if not isinstance(total_seats, int) or total_seats <= 0:
@@ -756,7 +761,10 @@ def create_seating_plan():
             rows=0,
             columns=0,
             seats_data=seats_data,
-            total_seats=total_seats
+            total_seats=total_seats,
+            room_number=room_number,
+            image_path=image_path,
+            is_image_based=is_image_based
         )
         
         return jsonify({
@@ -1198,46 +1206,66 @@ def unlink_seating_plan_from_session(session_id, plan_id):
 
 # ========== IMAGE-BASED SEATING PLAN ROUTES ==========
 
-@bp.route('/seating-plans/image/upload', methods=['POST'])
+@bp.route('/seating-plans/image/<plan_id>/upload', methods=['POST'])
 @jwt_required()
-def upload_classroom_image():
-    """Upload classroom image for seat mapping"""
+def upload_image_to_seating_plan(plan_id):
+    """Upload a classroom image for an image-based seating plan"""
     try:
         current_user, error_response, status_code = require_admin()
         if error_response:
             return error_response, status_code
         
-        # Check if image file is provided
-        if 'image' not in request.files:
-            return jsonify({'message': 'No image file provided'}), 400
+        models = get_models()
+        seating_plan_model = models['seating_plan']
         
-        image_file = request.files['image']
-        if image_file.filename == '':
-            return jsonify({'message': 'No image file selected'}), 400
+        # Check if plan exists
+        plan = seating_plan_model.find_by_id(plan_id)
+        if not plan:
+            return jsonify({'message': 'Seating plan not found'}), 404
+        
+        # Check if file is in request
+        if 'file' not in request.files:
+            return jsonify({'message': 'No file provided'}), 400
+        
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'message': 'No file selected'}), 400
         
         # Validate file extension
-        ALLOWED_EXTENSIONS = {'jpg', 'jpeg', 'png', 'gif', 'bmp'}
-        file_ext = image_file.filename.rsplit('.', 1)[1].lower() if '.' in image_file.filename else ''
+        ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
+        if not ('.' in file.filename and file.filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS):
+            return jsonify({'message': 'Invalid file type. Only PNG, JPG, JPEG, GIF allowed'}), 400
         
-        if file_ext not in ALLOWED_EXTENSIONS:
-            return jsonify({'message': f'Invalid image format. Allowed: {", ".join(ALLOWED_EXTENSIONS)}'}), 400
-        
-        # Create uploads directory if it doesn't exist
-        upload_dir = os.path.join(current_app.root_path, '..', 'uploads', 'classroom_images')
+        # Create uploads directory if not exists
+        upload_dir = os.path.join(os.path.dirname(__file__), '..', '..', 'uploads', 'classroom_images')
         os.makedirs(upload_dir, exist_ok=True)
         
-        # Save image with timestamp
-        timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
-        filename = f"classroom_{timestamp}_{image_file.filename}"
+        # Save file with secure filename
+        filename = secure_filename(f"{plan_id}_{file.filename}")
         filepath = os.path.join(upload_dir, filename)
+        file.save(filepath)
         
-        image_file.save(filepath)
+        # Update seating plan with image path
+        image_path = f'/uploads/classroom_images/{filename}'
+        update_data = {
+            'image_path': image_path,
+            'is_image_based': True
+        }
         
-        # Return file path for frontend use
+        success = seating_plan_model.update_seating_plan(plan_id, update_data)
+        if not success:
+            try:
+                os.remove(filepath)
+            except:
+                pass
+            return jsonify({'message': 'Failed to update seating plan'}), 500
+        
+        updated_plan = seating_plan_model.find_by_id(plan_id)
+        
         return jsonify({
-            'message': 'Image uploaded successfully',
-            'image_path': f'/uploads/classroom_images/{filename}',
-            'filename': filename
+            'message': 'Classroom image uploaded successfully',
+            'plan': updated_plan,
+            'image_url': image_path
         }), 200
         
     except Exception as e:
@@ -1245,95 +1273,333 @@ def upload_classroom_image():
         return jsonify({'message': 'Internal server error'}), 500
 
 
-@bp.route('/seating-plans/students/parse', methods=['POST'])
+@bp.route('/seating-plans/image/<plan_id>/save-seats', methods=['POST'])
 @jwt_required()
-def parse_student_data():
-    """Parse student data from CSV, Excel, or PDF file"""
+def save_marked_seats(plan_id):
+    """Save marked seat coordinates for an image-based seating plan"""
     try:
         current_user, error_response, status_code = require_admin()
         if error_response:
             return error_response, status_code
         
-        # Check if file is provided
-        if 'file' not in request.files:
-            return jsonify({'message': 'No file provided'}), 400
+        models = get_models()
+        seating_plan_model = models['seating_plan']
         
-        student_file = request.files['file']
-        if student_file.filename == '':
-            return jsonify({'message': 'No file selected'}), 400
+        # Check if plan exists
+        plan = seating_plan_model.find_by_id(plan_id)
+        if not plan:
+            return jsonify({'message': 'Seating plan not found'}), 404
         
-        # Validate file extension
-        ALLOWED_EXTENSIONS = {'csv', 'xlsx', 'xls', 'pdf'}
-        file_ext = student_file.filename.rsplit('.', 1)[1].lower() if '.' in student_file.filename else ''
+        data = request.get_json()
+        if not data or 'seats' not in data:
+            return jsonify({'message': 'Seats data is required'}), 400
         
-        if file_ext not in ALLOWED_EXTENSIONS:
-            return jsonify({'message': f'Invalid file format. Allowed: {", ".join(ALLOWED_EXTENSIONS)}'}), 400
+        seats_data = data.get('seats', [])
+        if not isinstance(seats_data, list):
+            return jsonify({'message': 'Seats must be a list'}), 400
         
-        # Create uploads directory if it doesn't exist
-        upload_dir = os.path.join(current_app.root_path, '..', 'uploads', 'student_data')
-        os.makedirs(upload_dir, exist_ok=True)
+        # Validate seat structure
+        for i, seat in enumerate(seats_data):
+            if not isinstance(seat, dict):
+                return jsonify({'message': f'Seat {i} must be an object'}), 400
+            
+            # Required fields for each seat
+            required_fields = ['seat_number', 'pixel_x', 'pixel_y', 'norm_x', 'norm_y']
+            for field in required_fields:
+                if field not in seat:
+                    return jsonify({'message': f'Seat {i} missing required field: {field}'}), 400
         
-        # Save file temporarily
-        timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
-        filename = f"students_{timestamp}_{student_file.filename}"
-        filepath = os.path.join(upload_dir, filename)
+        # Update seating plan with marked seats
+        update_data = {
+            'seats': seats_data,
+            'total_seats': len(seats_data),
+            'is_image_based': True
+        }
         
-        student_file.save(filepath)
+        success = seating_plan_model.update_seating_plan(plan_id, update_data)
+        if not success:
+            return jsonify({'message': 'Failed to save marked seats'}), 500
         
-        # Parse the file
-        from app.utils.seating_image_utils import StudentDataParser
-        students, error = StudentDataParser.parse_file(filepath)
-        
-        if error:
-            # Clean up file on error
-            try:
-                os.remove(filepath)
-            except:
-                pass
-            return jsonify({'message': error}), 400
-        
-        if not students:
-            try:
-                os.remove(filepath)
-            except:
-                pass
-            return jsonify({'message': 'No valid student data found in file'}), 400
+        updated_plan = seating_plan_model.find_by_id(plan_id)
         
         return jsonify({
-            'message': 'Student data parsed successfully',
-            'students': students,
-            'count': len(students),
-            'file_path': filepath
+            'message': 'Marked seats saved successfully',
+            'plan': updated_plan,
+            'total_seats_marked': len(seats_data)
         }), 200
         
     except Exception as e:
-        current_app.logger.error(f"Parse student data error: {str(e)}")
+        current_app.logger.error(f"Save marked seats error: {str(e)}")
         return jsonify({'message': 'Internal server error'}), 500
 
 
-@bp.route('/seating-plans/create-from-image', methods=['POST'])
+@bp.route('/seating-plans/image/<plan_id>/assign-student', methods=['POST'])
 @jwt_required()
-def create_seating_plan_from_image():
-    """
-    Create seating plan from image seats and student data
-    
-    Expects:
-    {
-        'classroom_name': str,
-        'room_number': str (optional, e.g., "Room 101"),
-        'total_seats': int (dynamic - no fixed rows/columns),
-        'image_path': str (from image upload),
-        'seats': [
-            {
-                'pixel_x': int,
-                'pixel_y': int,
-                'seat_number': int,
-                'student_name': str,
-                'roll_number': str
+def assign_student_to_seat(plan_id):
+    """Manually assign a single student to a seat"""
+    try:
+        current_user, error_response, status_code = require_admin()
+        if error_response:
+            return error_response, status_code
+        
+        models = get_models()
+        seating_plan_model = models['seating_plan']
+        
+        # Check if plan exists
+        plan = seating_plan_model.find_by_id(plan_id)
+        if not plan:
+            return jsonify({'message': 'Seating plan not found'}), 404
+        
+        data = request.get_json()
+        
+        # Validate required fields
+        required_fields = ['seat_number', 'student_name', 'roll_number']
+        for field in required_fields:
+            if field not in data:
+                return jsonify({'message': f'{field.replace("_", " ").capitalize()} is required'}), 400
+        
+        seat_number = data['seat_number']
+        student_name = data['student_name'].strip()
+        roll_number = data['roll_number'].strip()
+        
+        if not student_name or not roll_number:
+            return jsonify({'message': 'Student name and roll number cannot be empty'}), 400
+        
+        # Find the seat and update it
+        seats = plan.get('seats', [])
+        seat_found = False
+        
+        for seat in seats:
+            if seat.get('seat_number') == seat_number:
+                seat['student_name'] = student_name
+                seat['roll_number'] = roll_number
+                seat['occupied'] = True
+                seat_found = True
+                break
+        
+        if not seat_found:
+            return jsonify({'message': f'Seat {seat_number} not found in seating plan'}), 404
+        
+        # Update occupied_seats count
+        occupied_seats = len([s for s in seats if s.get('occupied')])
+        
+        # Update seating plan
+        update_data = {
+            'seats': seats,
+            'occupied_seats': occupied_seats
+        }
+        
+        success = seating_plan_model.update_seating_plan(plan_id, update_data)
+        if not success:
+            return jsonify({'message': 'Failed to assign student to seat'}), 500
+        
+        updated_plan = seating_plan_model.find_by_id(plan_id)
+        
+        return jsonify({
+            'message': f'Student assigned to seat {seat_number} successfully',
+            'plan': updated_plan
+        }), 200
+        
+    except Exception as e:
+        current_app.logger.error(f"Assign student to seat error: {str(e)}")
+        return jsonify({'message': 'Internal server error'}), 500
+
+
+@bp.route('/seating-plans/image/<plan_id>/assign-students-csv', methods=['POST'])
+@jwt_required()
+def assign_students_from_csv(plan_id):
+    """Assign multiple students to seats via CSV file"""
+    try:
+        current_user, error_response, status_code = require_admin()
+        if error_response:
+            return error_response, status_code
+        
+        models = get_models()
+        seating_plan_model = models['seating_plan']
+        
+        # Check if plan exists
+        plan = seating_plan_model.find_by_id(plan_id)
+        if not plan:
+            return jsonify({'message': 'Seating plan not found'}), 404
+        
+        # Check if file is in request
+        if 'file' not in request.files:
+            return jsonify({'message': 'No file provided'}), 400
+        
+        file = request.files['file']
+        if file.filename == '':
+            return jsonify({'message': 'No file selected'}), 400
+        
+        # Validate file extension
+        if not file.filename.lower().endswith('.csv'):
+            return jsonify({'message': 'File must be a CSV file'}), 400
+        
+        # Parse CSV file
+        try:
+            stream = file.stream.read().decode('UTF-8')
+            reader = csv.DictReader(stream.splitlines())
+            students = []
+            
+            for i, row in enumerate(reader, start=2):  # start=2 because header is row 1
+                # Validate required columns
+                if 'seat_number' not in row or 'student_name' not in row or 'roll_number' not in row:
+                    return jsonify({'message': 'CSV must have columns: seat_number, student_name, roll_number'}), 400
+                
+                seat_number = row['seat_number'].strip()
+                student_name = row['student_name'].strip()
+                roll_number = row['roll_number'].strip()
+                
+                if not seat_number or not student_name or not roll_number:
+                    return jsonify({'message': f'Row {i}: All fields must be non-empty'}), 400
+                
+                # Convert seat_number to int if possible for comparison
+                try:
+                    seat_number = int(seat_number)
+                except ValueError:
+                    seat_number = row['seat_number'].strip()
+                
+                students.append({
+                    'seat_number': seat_number,
+                    'student_name': student_name,
+                    'roll_number': roll_number
+                })
+        
+        except Exception as e:
+            return jsonify({'message': f'Error parsing CSV: {str(e)}'}), 400
+        
+        if not students:
+            return jsonify({'message': 'No students found in CSV'}), 400
+        
+        # Get existing seats from plan
+        seats = plan.get('seats', [])
+        assignments_made = 0
+        failed_seats = []
+        
+        # Assign students to seats based on seat_number matching
+        for student in students:
+            seat_number = student['seat_number']
+            seat_found = False
+            
+            for seat in seats:
+                if seat.get('seat_number') == seat_number:
+                    seat['student_name'] = student['student_name']
+                    seat['roll_number'] = student['roll_number']
+                    seat['occupied'] = True
+                    seat_found = True
+                    assignments_made += 1
+                    break
+            
+            if not seat_found:
+                failed_seats.append(str(seat_number))
+        
+        # Update occupied_seats count
+        occupied_seats = len([s for s in seats if s.get('occupied')])
+        
+        # Update seating plan
+        update_data = {
+            'seats': seats,
+            'occupied_seats': occupied_seats
+        }
+        
+        success = seating_plan_model.update_seating_plan(plan_id, update_data)
+        if not success:
+            return jsonify({'message': 'Failed to assign students to seats'}), 500
+        
+        updated_plan = seating_plan_model.find_by_id(plan_id)
+        
+        return jsonify({
+            'message': 'Students assigned from CSV successfully',
+            'plan': updated_plan,
+            'summary': {
+                'total_in_csv': len(students),
+                'assignments_made': assignments_made,
+                'failed_seats': failed_seats if failed_seats else None
             }
-        ]
-    }
-    """
+        }), 200
+        
+    except Exception as e:
+        current_app.logger.error(f"Assign students from CSV error: {str(e)}")
+        return jsonify({'message': 'Internal server error'}), 500
+
+
+@bp.route('/seating-plans/<plan_id>/student/<int:seat_number>', methods=['GET'])
+@jwt_required()
+def get_student_by_seat(plan_id, seat_number):
+    """Get student information assigned to a specific seat"""
+    try:
+        current_user, error_response, status_code = require_admin()
+        if error_response:
+            return error_response, status_code
+        
+        models = get_models()
+        seating_plan_model = models['seating_plan']
+        
+        # Find student by seat
+        student = seating_plan_model.find_student_by_seat(plan_id, seat_number)
+        if not student:
+            return jsonify({'message': f'No student assigned to seat {seat_number}'}), 404
+        
+        return jsonify({
+            'seat_number': student['seat_number'],
+            'student_name': student['student_name'],
+            'roll_number': student['roll_number'],
+            'pixel_x': student.get('pixel_x'),
+            'pixel_y': student.get('pixel_y'),
+            'norm_x': student.get('norm_x'),
+            'norm_y': student.get('norm_y')
+        }), 200
+        
+    except Exception as e:
+        current_app.logger.error(f"Get student by seat error: {str(e)}")
+        return jsonify({'message': 'Internal server error'}), 500
+
+
+@bp.route('/seating-plans/<plan_id>/students/export', methods=['GET'])
+@jwt_required()
+def export_student_assignments(plan_id):
+    """Export student assignments to CSV format"""
+    try:
+        current_user, error_response, status_code = require_admin()
+        if error_response:
+            return error_response, status_code
+        
+        models = get_models()
+        seating_plan_model = models['seating_plan']
+        
+        # Check if plan exists
+        plan = seating_plan_model.find_by_id(plan_id)
+        if not plan:
+            return jsonify({'message': 'Seating plan not found'}), 404
+        
+        seats = plan.get('seats', [])
+        
+        # Build CSV response
+        csv_data = "seat_number,student_name,roll_number\n"
+        for seat in seats:
+            seat_number = seat.get('seat_number', '')
+            student_name = seat.get('student_name', '')
+            roll_number = seat.get('roll_number', '')
+            
+            # Escape quotes in CSV fields
+            student_name = student_name.replace('"', '""') if student_name else ''
+            roll_number = roll_number.replace('"', '""') if roll_number else ''
+            
+            csv_data += f'{seat_number},"{student_name}","{roll_number}"\n'
+        
+        return csv_data, 200, {
+            'Content-Disposition': f'attachment; filename="seating_plan_{plan_id}.csv"',
+            'Content-Type': 'text/csv'
+        }
+        
+    except Exception as e:
+        current_app.logger.error(f"Export student assignments error: {str(e)}")
+        return jsonify({'message': 'Internal server error'}), 500
+
+
+@bp.route('/seating-plans/<plan_id>/identify-student/pixel', methods=['POST'])
+@jwt_required()
+def identify_student_by_pixel(plan_id):
+    """Identify student at specific pixel coordinates (for image-based seating plans)"""
     try:
         current_user, error_response, status_code = require_admin()
         if error_response:
@@ -1343,170 +1609,36 @@ def create_seating_plan_from_image():
         seating_plan_model = models['seating_plan']
         
         data = request.get_json()
+        if not data or 'pixel_x' not in data or 'pixel_y' not in data:
+            return jsonify({'message': 'pixel_x and pixel_y are required'}), 400
         
-        # Validate required fields
-        required_fields = ['classroom_name', 'seats']
-        for field in required_fields:
-            if field not in data:
-                return jsonify({'message': f'{field} is required'}), 400
+        pixel_x = data['pixel_x']
+        pixel_y = data['pixel_y']
+        tolerance = data.get('tolerance_pixels', 50)
         
-        classroom_name = data['classroom_name'].strip()
-        room_number = data.get('room_number', '').strip() or None  # Optional room number
-        seats_data = data.get('seats', [])
-        image_path = data.get('image_path', '')
-        total_seats = data.get('total_seats', len(seats_data))
-        
-        if not isinstance(seats_data, list):
-            return jsonify({'message': 'Seats must be an array'}), 400
-        
-        if total_seats <= 0:
-            return jsonify({'message': 'At least one seat must be selected'}), 400
-        
-        # Check if seating plan exists
-        existing_plan = seating_plan_model.find_by_classroom(classroom_name)
-        if existing_plan:
-            return jsonify({'message': 'Seating plan already exists for this classroom'}), 409
-        
-        # Process seats data - add row, column based on seat number for display
-        processed_seats = []
-        for idx, seat in enumerate(seats_data):
-            processed_seat = {
-                'id': f"{seat.get('pixel_x', seat.get('norm_x', idx))}-{seat.get('pixel_y', seat.get('norm_y', idx))}",
-                'row': idx // 5 if total_seats > 0 else 0,  # Approximate row (5 per row)
-                'column': idx % 5,  # Approximate column
-                'pixel_x': seat.get('pixel_x') if 'pixel_x' in seat else None,
-                'pixel_y': seat.get('pixel_y') if 'pixel_y' in seat else None,
-                'norm_x': seat.get('norm_x') if 'norm_x' in seat else None,
-                'norm_y': seat.get('norm_y') if 'norm_y' in seat else None,
-                'seat_number': int(seat.get('seat_number', idx + 1)),
-                'student_name': seat.get('student_name', ''),
-                'roll_number': seat.get('roll_number', ''),
-                'occupied': bool(seat.get('student_name')),
-            }
-            processed_seats.append(processed_seat)
-        
-        # Create seating plan (no fixed rows/columns, dynamic based on image)
-        new_plan = seating_plan_model.create_seating_plan(
-            classroom_name=classroom_name,
-            room_number=room_number,  # Include room number
-            rows=0,  # 0 indicates image-based flexible layout
-            columns=0,  # 0 indicates image-based flexible layout
-            seats_data=processed_seats
-        )
-        
-        # Store image path if provided
-        if image_path:
-            seating_plan_model.update_seating_plan(new_plan['id'], {'image_path': image_path})
-            new_plan['image_path'] = image_path
-        
-        return jsonify({
-            'message': 'Seating plan created from image successfully',
-            'plan': new_plan
-        }), 201
-        
-    except Exception as e:
-        current_app.logger.error(f"Create seating plan from image error: {str(e)}")
-        return jsonify({'message': 'Internal server error'}), 500
-
-
-@bp.route('/seating-plans/<plan_id>/students/map', methods=['POST'])
-@jwt_required()
-def map_students_to_seating_plan(plan_id):
-    """
-    Upload student file and map to existing image-based seating plan
-    
-    SEQUENTIAL MAPPING: The Nth click on the image corresponds to the Nth seat in the Excel file
-    
-    CSV PROTECTION:
-    - If a seat already has student data (manually assigned), it will NOT be overwritten
-    - The admin must use the Edit button to overwrite protected (occupied) seats
-    - This ensures intentional updates and prevents accidental overwrites
-    """
-    try:
-        current_user, error_response, status_code = require_admin()
-        if error_response:
-            return error_response, status_code
-
-        # Check file
-        if 'file' not in request.files:
-            return jsonify({'message': 'No file provided'}), 400
-
-        student_file = request.files['file']
-        if student_file.filename == '':
-            return jsonify({'message': 'No file selected'}), 400
-
-        # Save file temporarily
-        upload_dir = os.path.join(current_app.root_path, '..', 'uploads', 'student_data')
-        os.makedirs(upload_dir, exist_ok=True)
-        timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
-        filename = f"students_map_{timestamp}_{student_file.filename}"
-        filepath = os.path.join(upload_dir, filename)
-        student_file.save(filepath)
-
-        # Parse student file
-        from app.utils.seating_image_utils import StudentDataParser, SeatingCoordinateMapper
-        students, error = StudentDataParser.parse_file(filepath)
-        if error:
-            try:
-                os.remove(filepath)
-            except:
-                pass
-            return jsonify({'message': error}), 400
-
-        models = get_models()
-        seating_plan_model = models['seating_plan']
-
-        plan = seating_plan_model.find_by_id(plan_id)
-        if not plan:
-            try:
-                os.remove(filepath)
-            except:
-                pass
-            return jsonify({'message': 'Seating plan not found'}), 404
-
-        # Use existing seat coordinates from plan
-        coordinates = plan.get('seats', [])
-
-        # IMPORTANT: Use sequential mapping for CSV-to-coordinate mapping
-        # This ensures the Nth click maps to the Nth seat in the CSV (by seat number)
-        mapped_seats, map_error = SeatingCoordinateMapper.map_students_to_coordinates_sequential(
-            students, 
-            coordinates, 
-            coordinates  # existing_seats for protected seat checking
-        )
-        if map_error:
-            try:
-                os.remove(filepath)
-            except:
-                pass
-            return jsonify({'message': map_error}), 400
-
-        # Update plan with mapped seats & occupied count
-        occupied_seats = len([s for s in mapped_seats if s.get('occupied')])
-        update_success = seating_plan_model.update_seating_plan(plan_id, {'seats': mapped_seats, 'occupied_seats': occupied_seats})
-        if not update_success:
-            try:
-                os.remove(filepath)
-            except:
-                pass
-            return jsonify({'message': 'Failed to update seating plan with mapped students'}), 500
-
-        updated_plan = seating_plan_model.find_by_id(plan_id)
-
+        # Validate numeric values
         try:
-            os.remove(filepath)
-        except:
-            pass
-
+            pixel_x = int(pixel_x)
+            pixel_y = int(pixel_y)
+            tolerance = int(tolerance)
+        except ValueError:
+            return jsonify({'message': 'Coordinates must be numeric'}), 400
+        
+        # Find student at coordinates
+        student = seating_plan_model.find_student_by_pixel_proximity(plan_id, pixel_x, pixel_y, tolerance)
+        
+        if not student:
+            return jsonify({
+                'found': False,
+                'message': f'No student found within {tolerance} pixels of ({pixel_x}, {pixel_y})'
+            }), 404
+        
         return jsonify({
-            'message': 'Students mapped to seating plan successfully',
-            'plan': updated_plan,
-            'summary': {
-                'total_students_mapped': len([s for s in mapped_seats if s.get('occupied')]),
-                'protected_seats_preserved': len([s for s in mapped_seats if s.get('protected')])
-            }
+            'found': True,
+            'student': student
         }), 200
-
+        
     except Exception as e:
-        current_app.logger.error(f"Map students to seating plan error: {str(e)}")
+        current_app.logger.error(f"Identify student by pixel error: {str(e)}")
         return jsonify({'message': 'Internal server error'}), 500
+

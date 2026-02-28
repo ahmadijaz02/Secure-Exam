@@ -19,7 +19,6 @@ export const renderSeatingGrid = (plan) => {
     <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))' }}>
       {plan.seats.map((seat, idx) => {
         const isOccupied = !!(seat.student_name || seat.studentName);
-        const isProtected = seat.protected || false;
         const studentName = seat.student_name || seat.studentName || '';
         const rollNumber = seat.roll_number || seat.rollNumber || '';
         const seatLabel = seat.seat_number || `${idx + 1}`;
@@ -28,17 +27,12 @@ export const renderSeatingGrid = (plan) => {
           <div
             key={seat.id || `${seat.pixel_x}-${seat.pixel_y}-${idx}`}
             className={`border rounded p-3 text-xs text-left transition-all relative ${
-              isProtected 
-                ? 'bg-purple-50 border-purple-300 dark:bg-purple-900/20 dark:border-purple-700' 
-                : isOccupied 
+              isOccupied 
                 ? 'bg-blue-50 border-blue-300 dark:bg-blue-900/20 dark:border-blue-700' 
                 : 'bg-gray-50 border-gray-200 dark:bg-gray-800 dark:border-gray-700'
             }`}
-            title={isProtected ? 'Protected seat (manually assigned)' : ''}
+            title={studentName ? `${seatLabel}: ${studentName}${rollNumber ? ` (${rollNumber})` : ''}` : ''}
           >
-            {isProtected && (
-              <div className="absolute top-1 right-1 text-purple-600 dark:text-purple-400 text-lg" title="Protected">🔒</div>
-            )}
             <div className="font-bold text-sm mb-2 text-blue-600 dark:text-blue-400">{seatLabel}</div>
             <div className="text-[13px] font-semibold truncate text-gray-900 dark:text-gray-100">{studentName || <span className="text-gray-400 dark:text-gray-500">—</span>}</div>
             {rollNumber && <div className="text-[12px] text-gray-600 dark:text-gray-400 mt-1">{rollNumber}</div>}
@@ -67,7 +61,6 @@ export const renderSeatingEditor = (seats, selectedSeatKey, onSelectSeat) => {
     <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))' }}>
       {seats.map((seat) => {
         const isOccupied = !!(seat.student_name || seat.studentName);
-        const isProtected = seat.protected || false;
         const studentName = seat.student_name || seat.studentName || '';
         const rollNumber = seat.roll_number || seat.rollNumber || '';
         const seatLabel = seat.seat_number || `Seat ${seat.id}`;
@@ -78,17 +71,12 @@ export const renderSeatingEditor = (seats, selectedSeatKey, onSelectSeat) => {
             key={seatKey}
             onClick={() => onSelectSeat(seatKey)}
             className={`border rounded p-3 text-xs text-left cursor-pointer transition-all relative ${
-              isProtected
-                ? 'bg-purple-100 border-purple-300 hover:bg-purple-200 dark:bg-purple-900 dark:border-purple-700 dark:hover:bg-purple-800'
-                : isOccupied
+              isOccupied
                 ? 'bg-blue-100 border-blue-300 hover:bg-blue-200 dark:bg-blue-900 dark:border-blue-700 dark:hover:bg-blue-800'
                 : 'bg-green-100 border-green-300 hover:bg-green-200 dark:bg-green-900 dark:border-green-700 dark:hover:bg-green-800'
             } ${selectedSeatKey === seatKey ? 'ring-2 ring-blue-500' : ''}`}
-            title={isProtected ? `${seatLabel}: ${studentName} (${rollNumber}) - Protected` : studentName ? `${seatLabel}: ${studentName} (${rollNumber})` : `Seat ${seatLabel}`}
+            title={studentName ? `${seatLabel}: ${studentName} (${rollNumber})` : `Seat ${seatLabel}`}
           >
-            {isProtected && (
-              <div className="absolute top-1 right-1 text-purple-600 dark:text-purple-400 text-lg">🔒</div>
-            )}
             <div className="font-bold text-sm mb-2 text-blue-600 dark:text-blue-400">{seatLabel}</div>
             <div className="text-[13px] font-semibold truncate text-gray-900 dark:text-gray-100">{studentName || <span className="text-gray-400 dark:text-gray-500">—</span>}</div>
             {rollNumber && <div className="text-[12px] text-gray-600 dark:text-gray-400 mt-1">{rollNumber}</div>}

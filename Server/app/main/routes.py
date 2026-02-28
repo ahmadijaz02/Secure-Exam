@@ -212,3 +212,13 @@ def get_alert_image(filename):
         return send_from_directory(base_dir, filename)
     except FileNotFoundError:
         return jsonify({'message': 'Image not found'}), 404
+
+
+@bp.route('/uploads/classroom_images/<path:filename>', methods=['GET'])
+def get_classroom_image(filename):
+    """Serve classroom layout images"""
+    try:
+        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'uploads', 'classroom_images'))
+        return send_from_directory(base_dir, filename)
+    except FileNotFoundError:
+        return jsonify({'message': 'Image not found'}), 404

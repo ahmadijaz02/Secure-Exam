@@ -531,3 +531,75 @@ class SeatingCoordinateMapper:
             return seating_plan, None
         except Exception as e:
             return None, f"Error creating seating plan: {str(e)}"
+
+
+class IncidentStudentIdentifier:
+    """Utility class for identifying students from incident pixel coordinates"""
+    
+    @staticmethod
+    def find_student_at_location(seating_plan, pixel_x, pixel_y, tolerance_pixels=50):
+        """Find student at or near pixel coordinates in an image-based seating plan
+        
+        Args:
+            seating_plan: Seating plan dict with seats containing pixel coordinates
+            pixel_x: X coordinate of the incident (in original image pixels)
+            pixel_y: Y coordinate of the incident (in original image pixels)
+            tolerance_pixels: Maximum distance in pixels to consider as "at seat"
+        
+        Returns:
+            dict: Student info if found, None otherwise
+        """
+        if not seating_plan or not seating_plan.get('seats'):
+            return None
+        
+        closest_seat = None
+        closest_distance = float('inf')
+        
+        # Find the closest seat to the pixel coordinates
+        for seat in seating_plan['seats']:
+            seat_x = seat.get('pixel_x', 0)
+            seat_y = seat.get('pixel_y', 0)
+            
+            # Calculate Euclidean distance
+            distance = ((seat_x - pixel_x) ** 2 + (seat_y - pixel_y) ** 2) ** 0.5
+            
+            if distance < closest_distance:
+                closest_distance = distance
+                closest_seat = seat
+        
+        # If closest seat is within tolerance and has a student, return it
+        if closest_seat and closest_distance <= tolerance_pixels and closest_seat.get('student_name'):
+            return {
+                'seat_number': closest_seat.get('seat_number'),
+                'student_name': closest_seat.get('student_name'),
+                'roll_number': closest_seat.get('roll_number'),
+                'pixel_x': closest_seat.get('pixel_x'),
+                'pixel_y': closest_seat.get('pixel_y'),
+                'distance_pixels': closest_distance
+            }
+        
+        return None
+    
+    @staticmethod
+    def build_incident_description_with_student(incident_type, student_name=None, roll_number=None, seat_number=None):
+        """Build a detailed incident description including student information
+        
+        Args:
+            incident_type: Type of incident (e.g., PHONE_DETECTED)
+            student_name: Name of student if identified
+            roll_number: Roll number of student if identified
+            seat_number: Seat number if identified
+        
+        Returns:
+            str: Formatted incident description
+        """
+        base_desc = f"Auto-detected: {incident_type}"
+        
+        if student_name and roll_number:
+            base_desc += f" - Student: {student_name} ({roll_number})"
+            if seat_number:
+                base_desc += f" at Seat {seat_number}"
+        elif seat_number:
+            base_desc += f" - At Seat {seat_number}"
+        
+        return base_desc

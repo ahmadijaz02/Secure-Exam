@@ -224,13 +224,61 @@ const adminService = {
     const response = await apiClient.post(`/admin/exam-sessions/${sessionId}/seating-plans/${planId}/unlink`);
   },
 
+  // ========== IMAGE-BASED SEATING PLAN ROUTES ==========
+
   /**
-   * Upload student file and map to an existing seating plan (image-based)
+   * Upload a classroom image for an image-based seating plan
    */
-  mapStudentsToPlan: async (planId, formData) => {
-    const response = await apiClient.post(`/admin/seating-plans/${planId}/students/map`, formData, {
+  uploadClassroomImage: async (planId, file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await apiClient.post(`/admin/seating-plans/image/${planId}/upload`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     });
+    return response.data;
+  },
+
+  /**
+   * Save marked seat coordinates for an image-based seating plan
+   */
+  saveMarkedSeats: async (planId, seats) => {
+    const response = await apiClient.post(`/admin/seating-plans/image/${planId}/save-seats`, { seats });
+    return response.data;
+  },
+
+  /**
+   * Manually assign a student to a seat
+   */
+  assignStudentToSeat: async (planId, seatAssignment) => {
+    const response = await apiClient.post(`/admin/seating-plans/image/${planId}/assign-student`, seatAssignment);
+    return response.data;
+  },
+
+  /**
+   * Assign multiple students to seats via CSV file
+   */
+  assignStudentsFromCSV: async (planId, file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await apiClient.post(`/admin/seating-plans/image/${planId}/assign-students-csv`, formData, {
+      headers: { 'Content-Type': 'multipart/form-data' }
+    });
+    return response.data;
+  },
+
+  /**
+   * Get student assigned to a specific seat
+   */
+  getStudentBySeat: async (planId, seatNumber) => {
+    const response = await apiClient.get(`/admin/seating-plans/${planId}/student/${seatNumber}`);
+    return response.data;
+  },
+
+  /**
+   * Export student assignments to CSV
+   */
+  exportStudentAssignments: async (planId) => {
+    const response = await apiClient.get(`/admin/seating-plans/${planId}/students/export`);
     return response.data;
   },
 };
