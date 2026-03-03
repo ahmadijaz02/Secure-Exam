@@ -167,6 +167,7 @@ function StudentAssignmentModal({ planId, plan, isOpen, onClose, onAssignmentCom
       const response = await adminService.assignStudentsFromCSV(planId, csvFile);
 
       addNotification('success', response.message);
+      addNotification('success', 'Seating plan updated successfully');
       
       if (response.summary?.failed_seats?.length > 0) {
         addNotification(
@@ -182,6 +183,8 @@ function StudentAssignmentModal({ planId, plan, isOpen, onClose, onAssignmentCom
       if (onAssignmentComplete) {
         onAssignmentComplete(response.plan);
       }
+
+      onClose();
     } catch (error) {
       addNotification('error', error.response?.data?.message || 'Failed to upload CSV');
     } finally {

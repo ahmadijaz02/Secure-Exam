@@ -9,6 +9,29 @@ from werkzeug.utils import secure_filename
 from app.admin import bp
 from app import get_models
 
+
+def normalize_seat_identifier(value):
+    """Normalize seat identifiers for reliable matching across numeric/string forms."""
+    if value is None:
+        return ''
+
+    seat_str = str(value).strip()
+    if not seat_str:
+        return ''
+
+    try:
+        numeric_value = float(seat_str)
+        if numeric_value.is_integer():
+            return str(int(numeric_value))
+    except (ValueError, TypeError):
+        pass
+
+    return seat_str.upper()
+
+
+def seat_identifiers_match(a, b):
+    return normalize_seat_identifier(a) == normalize_seat_identifier(b)
+
 def require_admin():
     """Decorator to check if user is admin"""
     current_user_id = get_jwt_identity()
@@ -1370,7 +1393,7 @@ def assign_student_to_seat(plan_id):
         seat_found = False
         
         for seat in seats:
-            if seat.get('seat_number') == seat_number:
+            if seat_identifiers_match(seat.get('seat_number'), seat_number):
                 seat['student_name'] = student_name
                 seat['roll_number'] = roll_number
                 seat['occupied'] = True
@@ -1436,27 +1459,26 @@ def assign_students_from_csv(plan_id):
         
         # Parse CSV file
         try:
-            stream = file.stream.read().decode('UTF-8')
+            stream = file.stream.read().decode('UTF-8').lstrip('\ufeff')
             reader = csv.DictReader(stream.splitlines())
             students = []
             
             for i, row in enumerate(reader, start=2):  # start=2 because header is row 1
+                normalized_row = {
+                    (key or '').strip().lower().lstrip('\ufeff'): (value or '')
+                    for key, value in row.items()
+                }
+
                 # Validate required columns
-                if 'seat_number' not in row or 'student_name' not in row or 'roll_number' not in row:
+                if 'seat_number' not in normalized_row or 'student_name' not in normalized_row or 'roll_number' not in normalized_row:
                     return jsonify({'message': 'CSV must have columns: seat_number, student_name, roll_number'}), 400
                 
-                seat_number = row['seat_number'].strip()
-                student_name = row['student_name'].strip()
-                roll_number = row['roll_number'].strip()
+                seat_number = str(normalized_row.get('seat_number', '')).strip()
+                student_name = str(normalized_row.get('student_name', '')).strip()
+                roll_number = str(normalized_row.get('roll_number', '')).strip()
                 
                 if not seat_number or not student_name or not roll_number:
                     return jsonify({'message': f'Row {i}: All fields must be non-empty'}), 400
-                
-                # Convert seat_number to int if possible for comparison
-                try:
-                    seat_number = int(seat_number)
-                except ValueError:
-                    seat_number = row['seat_number'].strip()
                 
                 students.append({
                     'seat_number': seat_number,
@@ -1481,7 +1503,7 @@ def assign_students_from_csv(plan_id):
             seat_found = False
             
             for seat in seats:
-                if seat.get('seat_number') == seat_number:
+                if seat_identifiers_match(seat.get('seat_number'), seat_number):
                     seat['student_name'] = student['student_name']
                     seat['roll_number'] = student['roll_number']
                     seat['occupied'] = True

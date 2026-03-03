@@ -57,6 +57,30 @@ const ExamMonitoring = () => {
     }
   }, [hasFrame]);
 
+  const handleAlert = useCallback((payload) => {
+    if (!payload || !payload.reason) return;
+    const alertObj = {
+      id: Date.now() + Math.random(),
+      reason: payload.reason,
+      timestamp: payload.timestamp || '',
+      alert_time: payload.alert_time || new Date().toISOString(),
+      filename: payload.filename,
+      severity: payload.severity || (['PHONE_DETECTED', 'PAPER_PASSING'].includes(payload.reason) ? 'high' : ['WATCH_DETECTED', 'HAND_MOUTH'].includes(payload.reason) ? 'medium' : 'low'),
+      warning_level: payload.warning_level,
+      student_name: payload.student_name || null,
+      roll_number: payload.roll_number || null,
+      seat_number: payload.seat_number || null,
+      head_turn_escalated: payload.head_turn_escalated || false,
+      head_turn_count: payload.head_turn_count || null,
+    };
+    setAlerts((prev) => [alertObj, ...prev]);
+    const studentLabel = payload.student_name
+      ? ` — ${payload.student_name} (${payload.roll_number || 'N/A'})`
+      : '';
+    notification.showWarning(`Alert: ${formatAlertReason(payload.reason)}${studentLabel}`);
+    playAlertSound();
+  }, [notification]);
+
   const handleLog = useCallback((msg) => {
     if (!msg || typeof msg !== 'string') return;
     setLogs((prev) => [msg, ...prev].slice(0, 200));
@@ -65,21 +89,27 @@ const ExamMonitoring = () => {
       const parts = msg.split(':');
       const reason = parts[1] || 'ALERT';
       const timestamp = parts[2] || '';
-      setAlerts((prev) => [
-        {
-          id: Date.now() + Math.random(),
-          reason,
-          timestamp,
-          alert_time: new Date().toISOString(),
-          filename: parts[3],
-          severity: ['PHONE_DETECTED', 'PAPER_PASSING'].includes(reason) ? 'high' : ['WATCH_DETECTED', 'HAND_MOUTH'].includes(reason) ? 'medium' : 'low'
-        },
-        ...prev
-      ]);
-      notification.showWarning(`Alert: ${formatAlertReason(reason)}`);
-      playAlertSound();
+      // Basic fallback — detailed student info comes via monitoring_alert event
+      setAlerts((prev) => {
+        // Avoid duplicate if monitoring_alert already added it
+        const recent = prev[0];
+        if (recent && recent.reason === reason && Math.abs(new Date(recent.alert_time).getTime() - Date.now()) < 2000) {
+          return prev;
+        }
+        return [
+          {
+            id: Date.now() + Math.random(),
+            reason,
+            timestamp,
+            alert_time: new Date().toISOString(),
+            filename: parts[3],
+            severity: ['PHONE_DETECTED', 'PAPER_PASSING'].includes(reason) ? 'high' : ['WATCH_DETECTED', 'HAND_MOUTH'].includes(reason) ? 'medium' : 'low'
+          },
+          ...prev
+        ];
+      });
     }
-  }, [notification]);
+  }, []);
 
   useEffect(() => {
     const socket = socketService.joinMonitoring();
@@ -93,14 +123,16 @@ const ExamMonitoring = () => {
 
     socket.on('frame', handleFrame);
     socket.on('log', handleLog);
+    socket.on('monitoring_alert', handleAlert);
 
     return () => {
       socket.off('connect', onConnect);
       socket.off('disconnect', onDisconnect);
       socket.off('frame', handleFrame);
       socket.off('log', handleLog);
+      socket.off('monitoring_alert', handleAlert);
     };
-  }, [handleFrame, handleLog]);
+  }, [handleFrame, handleLog, handleAlert]);
 
   useEffect(() => {
     const fetchStatus = async () => {
@@ -280,7 +312,7 @@ const ExamMonitoring = () => {
                   </div>
                 ) : (
                   alerts.map((alert) => {
-                    const severity = getAlertSeverity(alert.reason);
+                    const severity = alert.severity || getAlertSeverity(alert.reason);
                     const colors = {
                       high: 'bg-red-100 border-red-500 text-red-800 dark:bg-red-900 dark:text-red-200',
                       medium: 'bg-yellow-100 border-yellow-500 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200',
@@ -291,6 +323,18 @@ const ExamMonitoring = () => {
                         <div className="flex justify-between items-start">
                           <div>
                             <p className="font-semibold">{formatAlertReason(alert.reason)}</p>
+                            {alert.student_name && (
+                              <p className="text-sm font-medium mt-1">
+                                👤 {alert.student_name}
+                                {alert.roll_number ? ` (${alert.roll_number})` : ''}
+                                {alert.seat_number ? ` — Seat ${alert.seat_number}` : ''}
+                              </p>
+                            )}
+                            {alert.head_turn_escalated && (
+                              <p className="text-xs font-bold text-red-700 dark:text-red-300 mt-1">
+                                ⚠️ Escalated: {alert.head_turn_count} head turns in 60s
+                              </p>
+                            )}
                             <p className="text-sm opacity-75 mt-1">{new Date(alert.alert_time).toLocaleString()}</p>
                             <span className="inline-block text-xs mt-1 px-2 py-1 rounded bg-slate-200 dark:bg-slate-700 font-bold text-slate-700 dark:text-slate-200">
                               Level {alert.warning_level || (['PHONE_DETECTED','PAPER_PASSING'].includes(alert.reason) ? 2 : 1)}

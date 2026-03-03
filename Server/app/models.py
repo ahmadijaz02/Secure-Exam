@@ -324,7 +324,7 @@ class SeatingPlan(MongoModel):
                 {'_id': ObjectId(plan_id)},
                 {'$set': update_data}
             )
-            return result.modified_count > 0
+            return result.matched_count > 0
         except:
             return False
     

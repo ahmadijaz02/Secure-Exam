@@ -137,6 +137,13 @@ function TeacherAlerts() {
                       <p className="text-lg font-semibold text-gray-900 dark:text-white">
                         {incident.incident_type}
                       </p>
+                      {incident.student_name && (
+                        <p className="text-sm font-medium text-blue-600 dark:text-blue-400 mt-1">
+                          👤 {incident.student_name}
+                          {incident.roll_number ? ` (${incident.roll_number})` : ''}
+                          {incident.seat_number ? ` — Seat ${incident.seat_number}` : ''}
+                        </p>
+                      )}
                       <p className="text-sm text-gray-600 dark:text-gray-400">
                         {incident.description || 'No description'}
                       </p>

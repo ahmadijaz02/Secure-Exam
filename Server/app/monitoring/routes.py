@@ -7,12 +7,22 @@ import threading
 import os
 from datetime import datetime
 import sys
+import math
+import time
 
 EMIT_LEGACY_MONITORING_FRAME = os.environ.get('EMIT_LEGACY_MONITORING_FRAME', '0').lower() in ('1', 'true', 'yes', 'on')
 
 # Global state
 current_process = None
 monitoring_active = False
+
+# Per-student head-turn tracker.
+# Key: student identifier ("roll_number" or "seat_number"), Value: list of timestamps
+# When a student accumulates HEAD_TURN_ESCALATION_THRESHOLD turns within
+# HEAD_TURN_WINDOW_SECONDS, the alert is escalated to warning level 2.
+HEAD_TURN_WINDOW_SECONDS = 60
+HEAD_TURN_ESCALATION_THRESHOLD = 3
+student_head_turn_tracker = {}   # { student_key: [timestamp, ...] }
 
 
 @socketio.on('connect', namespace='/')
@@ -57,6 +67,82 @@ def get_severity(reason):
         return 'low'
 
 
+def resolve_student_from_detection(app, exam_session_id, norm_x, norm_y):
+    """Look up the student nearest to a normalised detection coordinate.
+
+    The function iterates over all seating plans linked to the active exam
+    session (via the ``classrooms`` array) and finds the seat whose normalised
+    position is closest to (norm_x, norm_y).
+
+    Args:
+        app: Flask application object (for model access).
+        exam_session_id: ID of the current exam session.
+        norm_x: Detection centre x, normalised 0-1.
+        norm_y: Detection centre y, normalised 0-1.
+
+    Returns:
+        dict with ``student_name``, ``roll_number``, ``seat_number`` if a
+        match is found within tolerance, otherwise ``None``.
+    """
+    if not exam_session_id or norm_x is None or norm_y is None:
+        return None
+
+    try:
+        session_model = app.exam_session_model
+        seating_plan_model = app.seating_plan_model
+
+        session = session_model.find_by_id(exam_session_id)
+        if not session:
+            return None
+
+        classrooms = session.get('classrooms', [])
+        if not classrooms:
+            return None
+
+        # Tolerance in normalised coords (roughly 15% of frame dimension)
+        NORM_TOLERANCE = 0.15
+        best_match = None
+        best_dist = float('inf')
+
+        for classroom in classrooms:
+            plan_id = classroom.get('seating_plan_id')
+            if not plan_id:
+                continue
+
+            plan = seating_plan_model.find_by_id(plan_id)
+            if not plan:
+                continue
+
+            for seat in plan.get('seats', []):
+                seat_nx = seat.get('norm_x')
+                seat_ny = seat.get('norm_y')
+                student_name = seat.get('student_name', '')
+                roll_number = seat.get('roll_number', '')
+
+                if seat_nx is None or seat_ny is None:
+                    continue
+                if not student_name:
+                    continue
+
+                dist = math.sqrt((seat_nx - norm_x) ** 2 + (seat_ny - norm_y) ** 2)
+                if dist < best_dist:
+                    best_dist = dist
+                    best_match = {
+                        'student_name': student_name,
+                        'roll_number': roll_number or '',
+                        'seat_number': seat.get('seat_number', ''),
+                        'plan_id': plan.get('id', plan_id),
+                        'classroom_name': plan.get('classroom_name', ''),
+                    }
+
+        if best_match and best_dist <= NORM_TOLERANCE:
+            return best_match
+        return None
+    except Exception as e:
+        print(f"[resolve_student] Error: {e}")
+        return None
+
+
 def process_monitor_output(process, socketio_instance, app):
     """
     Read monitor.py stdout line-by-line and emit via Socket.IO.
@@ -94,11 +180,31 @@ def process_monitor_output(process, socketio_instance, app):
                         print(f"Error emitting frame: {e}")
 
                 elif line.startswith('ALERT:'):
-                    parts = line.split(':', 3)
+                    parts = line.split(':', 4)
                     if len(parts) >= 2:
                         reason = parts[1]
                         timestamp = parts[2] if len(parts) > 2 else ""
                         filename = parts[3] if len(parts) > 3 else None
+                        bbox_info = parts[4] if len(parts) > 4 else None
+
+                        # Parse optional bounding-box centre + frame dimensions
+                        # Format: cx,cy,frame_w,frame_h
+                        norm_x = None
+                        norm_y = None
+                        if bbox_info:
+                            try:
+                                bbox_parts = bbox_info.split(',')
+                                if len(bbox_parts) >= 4:
+                                    cx = int(bbox_parts[0])
+                                    cy = int(bbox_parts[1])
+                                    fw = int(bbox_parts[2])
+                                    fh = int(bbox_parts[3])
+                                    if fw > 0 and fh > 0:
+                                        norm_x = cx / fw
+                                        norm_y = cy / fh
+                            except (ValueError, ZeroDivisionError):
+                                pass
+
                         image_path = None
                         if filename:
                             base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'suspicious_alerts'))
@@ -109,27 +215,79 @@ def process_monitor_output(process, socketio_instance, app):
                             relative_path = relative_path.replace(os.sep, '/')
                             image_path = f"/api/alerts/{relative_path}"
                         print(f"[Monitor] Alert: {reason}")
+
+                        # Resolve student from seating plan (if coordinates available)
+                        exam_session_id = getattr(app, 'current_exam_session_id', None)
+                        student_info = resolve_student_from_detection(app, exam_session_id, norm_x, norm_y)
+                        student_name = student_info['student_name'] if student_info else None
+                        roll_number = student_info['roll_number'] if student_info else None
+                        seat_number = student_info['seat_number'] if student_info else None
+
+                        if student_info:
+                            print(f"[Monitor] Detected student: {student_name} (Roll: {roll_number}, Seat: {seat_number})")
+
                         # Determine warning level and type
                         behavior_types = ['HEAD_LEFT', 'HEAD_RIGHT', 'HAND_MOUTH', 'WATCH_DETECTED']
                         object_types = ['PHONE_DETECTED', 'PAPER_PASSING']
+                        head_turn_types = ['HEAD_LEFT', 'HEAD_RIGHT']
+                        head_turn_escalated = False
+                        head_turn_count = 0
+
                         if reason in object_types:
                             warning_level = 2
                             send_email = True
                         else:
                             warning_level = 1
                             send_email = False
+
+                        # --- Head-turn escalation logic ---
+                        if reason in head_turn_types and student_info:
+                            student_key = roll_number or seat_number or student_name
+                            now_ts = time.time()
+
+                            # Append current timestamp
+                            if student_key not in student_head_turn_tracker:
+                                student_head_turn_tracker[student_key] = []
+                            student_head_turn_tracker[student_key].append(now_ts)
+
+                            # Prune entries older than the window
+                            cutoff = now_ts - HEAD_TURN_WINDOW_SECONDS
+                            student_head_turn_tracker[student_key] = [
+                                t for t in student_head_turn_tracker[student_key] if t >= cutoff
+                            ]
+
+                            head_turn_count = len(student_head_turn_tracker[student_key])
+
+                            if head_turn_count >= HEAD_TURN_ESCALATION_THRESHOLD:
+                                warning_level = 2
+                                send_email = True
+                                head_turn_escalated = True
+                                print(
+                                    f"[Monitor] Head-turn ESCALATED to Level 2 for "
+                                    f"{student_name} ({roll_number}) — "
+                                    f"{head_turn_count} turns in last {HEAD_TURN_WINDOW_SECONDS}s"
+                                )
+
+                        # Build description with student info
+                        description = f"Auto-detected: {reason}"
+                        if student_info:
+                            description = f"{reason} — {student_name} (Roll: {roll_number}, Seat: {seat_number})"
+                        if head_turn_escalated:
+                            description += f" [ESCALATED: {head_turn_count} head turns in {HEAD_TURN_WINDOW_SECONDS}s]"
+
                         # Save to DB
                         try:
                             # Save incident to DB
                             incident_model = app.incident_model
-                            # Try to get exam_session_id from global, request, or context (customize as needed)
-                            exam_session_id = getattr(app, 'current_exam_session_id', None)
                             incident = incident_model.create_incident(
                                 exam_session_id=exam_session_id,
                                 incident_type=reason,
-                                description=f"Auto-detected: {reason}",
+                                description=description,
                                 image_url=image_path,
-                                confidence_score=None
+                                confidence_score=None,
+                                student_name=student_name,
+                                roll_number=roll_number,
+                                seat_number=seat_number,
                             )
                             # Emit to dashboard
                             payload = {
@@ -137,9 +295,14 @@ def process_monitor_output(process, socketio_instance, app):
                                 'timestamp': timestamp,
                                 'alert_time': datetime.now().isoformat(),
                                 'filename': filename,
-                                'severity': get_severity(reason),
+                                'severity': 'high' if head_turn_escalated else get_severity(reason),
                                 'warning_level': warning_level,
-                                'exam_session_id': exam_session_id
+                                'exam_session_id': exam_session_id,
+                                'student_name': student_name,
+                                'roll_number': roll_number,
+                                'seat_number': seat_number,
+                                'head_turn_escalated': head_turn_escalated,
+                                'head_turn_count': head_turn_count if head_turn_escalated else None,
                             }
                             socketio_instance.emit('log', line, namespace='/')
                             socketio_instance.emit('monitoring_alert', payload, namespace='/monitoring')
@@ -162,9 +325,17 @@ def process_monitor_output(process, socketio_instance, app):
                                     if teacher_email:
                                         print(f"[DEBUG] Sending email to {teacher_email} for Level 2 warning: {reason}")
                                         from app.utils.helpers import send_email_alert
+                                        email_body = f"Level 2 Warning: {reason} detected at {timestamp}."
+                                        if head_turn_escalated and student_name:
+                                            email_body = (
+                                                f"Level 2 Warning: {student_name} (Roll: {roll_number}, Seat: {seat_number}) "
+                                                f"has turned their head {head_turn_count} times in the last {HEAD_TURN_WINDOW_SECONDS} seconds."
+                                            )
+                                        if filename:
+                                            email_body += f" See evidence: {filename}"
                                         send_email_alert(
-                                            subject=f"Exam Alert: {reason}",
-                                            body=f"Level 2 Warning: {reason} detected at {timestamp}. See evidence: {filename}",
+                                            subject=f"Exam Alert: {reason}{' — ' + student_name if student_name else ''}",
+                                            body=email_body,
                                             to_emails=[teacher_email]
                                         )
                                         print(f"[DEBUG] Email sent to {teacher_email} for Level 2 warning: {reason}")
@@ -326,6 +497,8 @@ def stop_monitoring():
                 return jsonify({'error': 'Access denied. Session not assigned to you.'}), 403
 
         monitoring_active = False
+        # Reset per-student head-turn tracker
+        student_head_turn_tracker.clear()
         if current_process:
             current_process.terminate()
             try:

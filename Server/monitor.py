@@ -148,7 +148,18 @@ def emit_frame(img):
         print(f"FRAME_ERROR:{str(e)}")
         sys.stdout.flush()
 
-def save_alert(img, reason, last_time):
+def save_alert(img, reason, last_time, bbox_center=None):
+    """Save an alert image and emit an ALERT line.
+
+    Args:
+        img: The frame image.
+        reason: Alert reason string (e.g. PHONE_DETECTED).
+        last_time: Timestamp of the last saved alert (for cooldown).
+        bbox_center: Optional tuple (cx, cy) of the detection center in *pixel*
+                     coordinates of the original frame.  When provided the ALERT
+                     line includes the coordinates so the backend can map the
+                     detection to the nearest student in the seating plan.
+    """
     current_time = time.time()
     if SAVE_ALERTS and (current_time - last_time > ALERT_COOLDOWN):
         now = datetime.now()
@@ -159,7 +170,14 @@ def save_alert(img, reason, last_time):
         timestamp = now.strftime("%Y%m%d_%H%M%S")
         filename = os.path.join(target_dir, f"ALERT_{reason}_{timestamp}.jpg")
         cv2.imwrite(filename, img)
-        emit(f"ALERT:{reason}:{timestamp}:{filename}")
+        # Extended ALERT format includes bounding-box centre + frame size so the
+        # backend can resolve which student/seat the detection belongs to.
+        if bbox_center:
+            cx, cy = bbox_center
+            h, w = img.shape[:2]
+            emit(f"ALERT:{reason}:{timestamp}:{filename}:{cx},{cy},{w},{h}")
+        else:
+            emit(f"ALERT:{reason}:{timestamp}:{filename}")
         return current_time
     return last_time
 
@@ -336,7 +354,9 @@ def run_system():
                 mouth_y = face_landmarks.landmark[13].y
                 all_mouth_centers.append((mouth_x, mouth_y))
                 if direction:
-                    last_save_time = save_alert(img, f"HEAD_{direction}", last_save_time)
+                    nose_px = int(nose_coords[0] * FRAME_WIDTH)
+                    nose_py = int(nose_coords[1] * FRAME_HEIGHT)
+                    last_save_time = save_alert(img, f"HEAD_{direction}", last_save_time, bbox_center=(nose_px, nose_py))
 
         if should_process_mediapipe or cached_hand_results is None:
             if img_rgb is None:
@@ -371,7 +391,7 @@ def run_system():
                     cv2.putText(img, "SUSPICIOUS: HAND NEAR MOUTH", (hx, hy - 40), 
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                     emit(f"🚨 ALERT: HAND NEAR MOUTH")
-                    last_save_time = save_alert(img, "HAND_MOUTH", last_save_time)
+                    last_save_time = save_alert(img, "HAND_MOUTH", last_save_time, bbox_center=(hx, hy))
         prev_hand_positions = current_hand_positions
 
         if should_process_yolo or cached_results is None:
@@ -461,12 +481,14 @@ def run_system():
                     if x1 < fx < x2 and y1 < fy < y2:
                         hands_touching_count += 1
                 if hands_touching_count >= 2:
-                    last_save_time = save_alert(img, "PAPER_PASSING", last_save_time)
+                    paper_cx, paper_cy = (x1 + x2) // 2, (y1 + y2) // 2
+                    last_save_time = save_alert(img, "PAPER_PASSING", last_save_time, bbox_center=(paper_cx, paper_cy))
         # Watch detection logic
         for (x1, y1, x2, y2, label, conf) in all_boxes:
             if 'watch' in label.lower() and conf > WATCH_DISPLAY_CONF:
+                watch_cx, watch_cy = (x1 + x2) // 2, (y1 + y2) // 2
                 emit(f"⌚ ALERT: WATCH DETECTED (confidence: {int(conf*100)}%)")
-                last_save_time = save_alert(img, "WATCH_DETECTED", last_save_time)
+                last_save_time = save_alert(img, "WATCH_DETECTED", last_save_time, bbox_center=(watch_cx, watch_cy))
 
         current_frame_phone_ids = []
         for (x1, y1, x2, y2, conf, track_id) in phone_candidates:
@@ -482,7 +504,8 @@ def run_system():
                 if track_id != -1:
                     phone_persistence_map[track_id] = phone_persistence_map.get(track_id, 0) + 1
                 if phone_persistence_map.get(track_id, 1) >= PHONE_PERSISTENCE:
-                    last_save_time = save_alert(img, "PHONE_DETECTED", last_save_time)
+                    phone_cx, phone_cy = (x1 + x2) // 2, (y1 + y2) // 2
+                    last_save_time = save_alert(img, "PHONE_DETECTED", last_save_time, bbox_center=(phone_cx, phone_cy))
         for pid in list(phone_persistence_map.keys()):
             if pid not in current_frame_phone_ids:
                 phone_persistence_map[pid] = max(0, phone_persistence_map[pid] - 1)
