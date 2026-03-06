@@ -25,9 +25,15 @@ function TeacherDashboard() {
   const [activeSessionError, setActiveSessionError] = useState('');
   const [hasFrame, setHasFrame] = useState(false);
   const [isSocketConnected, setIsSocketConnected] = useState(false);
+  const [streamFps, setStreamFps] = useState(0);
+  const [streamLatencyMs, setStreamLatencyMs] = useState(null);
+  const [lastFrameAt, setLastFrameAt] = useState(null);
   const videoImgRef = useRef(null);
   const latestFrameRef = useRef(null);
+  const latestFrameTsRef = useRef(null);
   const renderScheduledRef = useRef(false);
+  const framesThisSecondRef = useRef(0);
+  const fpsWindowStartRef = useRef(Date.now());
   const [recentIncidents, setRecentIncidents] = useState([]);
   const [isLoadingRecent, setIsLoadingRecent] = useState(true);
   const [recentError, setRecentError] = useState('');
@@ -159,7 +165,13 @@ function TeacherDashboard() {
   useEffect(() => {
     if (!activeSession) {
       setHasFrame(false);
+      setStreamFps(0);
+      setStreamLatencyMs(null);
+      setLastFrameAt(null);
       latestFrameRef.current = null;
+      latestFrameTsRef.current = null;
+      framesThisSecondRef.current = 0;
+      fpsWindowStartRef.current = Date.now();
       return undefined;
     }
 
@@ -167,14 +179,32 @@ function TeacherDashboard() {
     const onConnect = () => setIsSocketConnected(true);
     const onDisconnect = () => setIsSocketConnected(false);
     const onFrame = (data) => {
-      if (data && typeof data === 'string' && data.length > 100) {
-        latestFrameRef.current = data;
+      const frameData = typeof data === 'string' ? data : data?.frame;
+      const frameTs = typeof data === 'object' ? data?.ts : null;
+      if (frameData && typeof frameData === 'string' && frameData.length > 100) {
+        latestFrameRef.current = frameData;
+        latestFrameTsRef.current = Number.isFinite(frameTs) ? frameTs : null;
+        framesThisSecondRef.current += 1;
+
+        const now = Date.now();
+        const elapsed = now - fpsWindowStartRef.current;
+        if (elapsed >= 1000) {
+          setStreamFps(Math.round((framesThisSecondRef.current * 1000) / elapsed));
+          framesThisSecondRef.current = 0;
+          fpsWindowStartRef.current = now;
+        }
+
         if (!renderScheduledRef.current) {
           renderScheduledRef.current = true;
           requestAnimationFrame(() => {
             const latestFrame = latestFrameRef.current;
             if (videoImgRef.current && latestFrame) {
               videoImgRef.current.src = `data:image/jpeg;base64,${latestFrame}`;
+            }
+            const renderedAt = Date.now();
+            setLastFrameAt(new Date(renderedAt));
+            if (latestFrameTsRef.current) {
+              setStreamLatencyMs(Math.max(0, renderedAt - latestFrameTsRef.current));
             }
             renderScheduledRef.current = false;
           });
@@ -300,18 +330,29 @@ function TeacherDashboard() {
               </div>
               <div className="relative w-full max-w-full bg-black rounded-lg overflow-hidden aspect-video flex items-center justify-center min-h-[240px]">
                 {hasFrame ? (
-                  <img
-                    ref={videoImgRef}
-                    src=""
-                    alt="Live feed"
-                    className="block w-full h-full max-w-full object-cover"
-                  />
+                  <>
+                    <img
+                      ref={videoImgRef}
+                      src=""
+                      alt="Live feed"
+                      className="block w-full h-full max-w-full object-cover"
+                    />
+                    <div className="absolute top-2 right-2 px-2 py-1 rounded bg-black/60 text-white text-xs">
+                      FPS: {streamFps}
+                      {streamLatencyMs !== null ? ` • Latency: ${streamLatencyMs}ms` : ' • Latency: --'}
+                    </div>
+                  </>
                 ) : (
                   <div className="text-center text-gray-400">
                     <p className="text-sm">Waiting for live feed...</p>
                   </div>
                 )}
               </div>
+              {hasFrame ? (
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  {lastFrameAt ? `Last frame: ${lastFrameAt.toLocaleTimeString()}` : 'Last frame: --'}
+                </p>
+              ) : null}
             </div>
           ) : (
             <div className="flex items-center justify-center h-64 bg-gray-100 dark:bg-gray-700 rounded-lg">

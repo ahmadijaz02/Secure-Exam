@@ -20,18 +20,25 @@ const ExamMonitoring = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [hasFrame, setHasFrame] = useState(false);
   const [frameCount, setFrameCount] = useState(0);
+  const [streamFps, setStreamFps] = useState(0);
+  const [streamLatencyMs, setStreamLatencyMs] = useState(null);
   const [lastFrameAt, setLastFrameAt] = useState(null);
   const [isSocketConnected, setIsSocketConnected] = useState(false);
 
   const videoImgRef = useRef(null);
   const latestFrameRef = useRef(null);
+  const latestFrameTsRef = useRef(null);
   const renderScheduledRef = useRef(false);
   const receivedFramesRef = useRef(0);
   const lastStatsUpdateRef = useRef(0);
+  const prevFramesRef = useRef(0);
 
   const handleFrame = useCallback((data) => {
-    if (data && typeof data === 'string' && data.length > 100) {
-      latestFrameRef.current = data;
+    const frameData = typeof data === 'string' ? data : data?.frame;
+    const frameTs = typeof data === 'object' ? data?.ts : null;
+    if (frameData && typeof frameData === 'string' && frameData.length > 100) {
+      latestFrameRef.current = frameData;
+      latestFrameTsRef.current = Number.isFinite(frameTs) ? frameTs : null;
       receivedFramesRef.current += 1;
 
       if (!renderScheduledRef.current) {
@@ -40,6 +47,9 @@ const ExamMonitoring = () => {
           const latestFrame = latestFrameRef.current;
           if (videoImgRef.current && latestFrame) {
             videoImgRef.current.src = `data:image/jpeg;base64,${latestFrame}`;
+          }
+          if (latestFrameTsRef.current) {
+            setStreamLatencyMs(Math.max(0, Date.now() - latestFrameTsRef.current));
           }
           renderScheduledRef.current = false;
         });
@@ -50,6 +60,9 @@ const ExamMonitoring = () => {
         setHasFrame(true);
       }
       if (now - lastStatsUpdateRef.current >= 1000) {
+        const fps = receivedFramesRef.current - prevFramesRef.current;
+        prevFramesRef.current = receivedFramesRef.current;
+        setStreamFps(fps);
         setFrameCount(receivedFramesRef.current);
         setLastFrameAt(new Date(now));
         lastStatsUpdateRef.current = now;
@@ -269,6 +282,8 @@ const ExamMonitoring = () => {
               {isMonitoring && (
                 <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
                   Frames: {frameCount}
+                  {` • FPS: ${streamFps}`}
+                  {streamLatencyMs !== null ? ` • Latency: ${streamLatencyMs}ms` : ''}
                   {lastFrameAt ? ` • Last: ${lastFrameAt.toLocaleTimeString()}` : ''}
                 </p>
               )}
@@ -285,6 +300,10 @@ const ExamMonitoring = () => {
                     <div className="absolute top-2 left-2 px-2 py-1 bg-green-500/90 text-white text-xs font-semibold rounded-full flex items-center gap-1">
                       <div className="w-2 h-2 bg-white rounded-full animate-pulse" />
                       LIVE
+                    </div>
+                    <div className="absolute top-2 right-2 px-2 py-1 rounded bg-black/60 text-white text-xs">
+                      FPS: {streamFps}
+                      {streamLatencyMs !== null ? ` • Latency: ${streamLatencyMs}ms` : ' • Latency: --'}
                     </div>
                   </>
                 ) : (

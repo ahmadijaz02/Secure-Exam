@@ -15,6 +15,25 @@ function TeacherSessions() {
   const [error, setError] = useState('');
   const [startingSessionId, setStartingSessionId] = useState(null);
   const [stoppingSessionId, setStoppingSessionId] = useState(null);
+  const [qualityPreset, setQualityPreset] = useState('balanced');
+
+  const qualityOptions = [
+    {
+      value: 'low_latency',
+      label: 'Low Latency',
+      helper: 'Fastest live feed, slightly lower detection detail'
+    },
+    {
+      value: 'balanced',
+      label: 'Balanced',
+      helper: 'Recommended default for most classrooms'
+    },
+    {
+      value: 'high_accuracy',
+      label: 'High Accuracy',
+      helper: 'Best detection detail, may increase latency'
+    },
+  ];
 
   const fetchSessions = async () => {
     try {
@@ -53,8 +72,9 @@ function TeacherSessions() {
   const handleStartSession = async (sessionId) => {
     try {
       setStartingSessionId(sessionId);
-      await monitoringService.startMonitoring(sessionId);
-      addNotification('success', 'Monitoring started');
+      await monitoringService.startMonitoring(sessionId, qualityPreset);
+      const selected = qualityOptions.find((option) => option.value === qualityPreset);
+      addNotification('success', `Monitoring started (${selected?.label || qualityPreset})`);
       navigate(`/teacher/monitoring/${sessionId}`);
     } catch (err) {
       addNotification('error', err.message || 'Failed to start monitoring');
@@ -82,6 +102,32 @@ function TeacherSessions() {
         <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Active Sessions</h1>
         <p className="text-gray-600 dark:text-gray-400">Start monitoring for sessions assigned to you</p>
       </div>
+
+      <Card>
+        <Card.Content className="p-4">
+          <div className="flex flex-col gap-3">
+            <p className="text-sm font-semibold text-gray-900 dark:text-white">Monitoring Quality Preset</p>
+            <div className="flex flex-wrap gap-2">
+              {qualityOptions.map((option) => {
+                const isSelected = qualityPreset === option.value;
+                return (
+                  <Button
+                    key={option.value}
+                    variant={isSelected ? 'primary' : 'outline'}
+                    size="sm"
+                    onClick={() => setQualityPreset(option.value)}
+                  >
+                    {option.label}
+                  </Button>
+                );
+              })}
+            </div>
+            <p className="text-xs text-gray-600 dark:text-gray-400">
+              {qualityOptions.find((option) => option.value === qualityPreset)?.helper}
+            </p>
+          </div>
+        </Card.Content>
+      </Card>
 
       <Card>
         <Card.Content className="p-6">

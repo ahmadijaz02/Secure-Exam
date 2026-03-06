@@ -11,6 +11,56 @@ import math
 import time
 
 EMIT_LEGACY_MONITORING_FRAME = os.environ.get('EMIT_LEGACY_MONITORING_FRAME', '0').lower() in ('1', 'true', 'yes', 'on')
+SOCKET_STREAM_TARGET_FPS = max(1, int(os.environ.get('SOCKET_STREAM_TARGET_FPS', '10')))
+SOCKET_EMIT_EVERY_N = max(1, int(os.environ.get('SOCKET_EMIT_EVERY_N', '1')))
+
+MONITOR_QUALITY_PRESETS = {
+    'low_latency': {
+        'YOLO_IMAGE_SIZE': '640',
+        'YOLO_PROCESS_EVERY': '3',
+        'MEDIAPIPE_PROCESS_EVERY': '8',
+        'MEDIAPIPE_REFINE_LANDMARKS': '0',
+        'ENABLE_CLAHE': '0',
+        'STREAM_WIDTH': '426',
+        'STREAM_HEIGHT': '240',
+        'STREAM_JPEG_QUALITY': '38',
+        'STREAM_TARGET_FPS': '15',
+        'SOCKET_STREAM_TARGET_FPS': '12',
+        'CAMERA_READ_LATEST': '1',
+        'CAMERA_BUFFER_FLUSH': '1',
+        'ENABLE_TILED_INFERENCE': '0',
+    },
+    'balanced': {
+        'YOLO_IMAGE_SIZE': '960',
+        'YOLO_PROCESS_EVERY': '2',
+        'MEDIAPIPE_PROCESS_EVERY': '4',
+        'STREAM_WIDTH': '512',
+        'STREAM_HEIGHT': '288',
+        'STREAM_JPEG_QUALITY': '48',
+        'STREAM_TARGET_FPS': '12',
+        'SOCKET_STREAM_TARGET_FPS': '10',
+        'CAMERA_READ_LATEST': '1',
+        'CAMERA_BUFFER_FLUSH': '2',
+        'ENABLE_TILED_INFERENCE': '1',
+        'TILED_INFERENCE_EVERY': '4',
+    },
+    'high_accuracy': {
+        'MONITOR_FRAME_WIDTH': '1920',
+        'MONITOR_FRAME_HEIGHT': '1080',
+        'YOLO_IMAGE_SIZE': '1280',
+        'YOLO_PROCESS_EVERY': '1',
+        'MEDIAPIPE_PROCESS_EVERY': '4',
+        'STREAM_WIDTH': '640',
+        'STREAM_HEIGHT': '360',
+        'STREAM_JPEG_QUALITY': '60',
+        'STREAM_TARGET_FPS': '10',
+        'SOCKET_STREAM_TARGET_FPS': '10',
+        'CAMERA_READ_LATEST': '1',
+        'CAMERA_BUFFER_FLUSH': '1',
+        'ENABLE_TILED_INFERENCE': '1',
+        'TILED_INFERENCE_EVERY': '2',
+    },
+}
 
 # Global state
 current_process = None
@@ -74,6 +124,23 @@ def resolve_student_from_detection(app, exam_session_id, norm_x, norm_y):
     session (via the ``classrooms`` array) and finds the seat whose normalised
     position is closest to (norm_x, norm_y).
 
+    **Perspective-aware matching:**  In a typical exam-hall camera setup the
+    camera is mounted at one end of the room looking across rows of desks.
+    Objects that are physically far from the camera appear in the *upper*
+    portion of the frame (small norm_y) while objects close to the camera
+    appear in the *lower* portion (large norm_y).  A fixed Euclidean
+    tolerance therefore doesn't work well — seats far from the camera are
+    packed into a small band of normalised Y while seats nearby spread out.
+
+    To compensate we:
+      1. Use a **wider X-tolerance** than before (seats in a row are spaced
+         more evenly along the horizontal axis).
+      2. Use a **Y-tolerance that scales with the Y position** — tighter at the
+         bottom of the frame (close seats, easy to distinguish) and wider at
+         the top (distant seats, compressed by perspective).
+      3. Apply a **weighted distance** that emphasises Y-axis differences less
+         for the upper half of the frame.
+
     Args:
         app: Flask application object (for model access).
         exam_session_id: ID of the current exam session.
@@ -99,8 +166,19 @@ def resolve_student_from_detection(app, exam_session_id, norm_x, norm_y):
         if not classrooms:
             return None
 
-        # Tolerance in normalised coords (roughly 15% of frame dimension)
-        NORM_TOLERANCE = 0.15
+        # --- Perspective-aware tolerances ---
+        # Base tolerance — applies when the detection is in the lower half of
+        # the frame (close to camera, good spatial separation).
+        BASE_X_TOLERANCE = 0.12
+        BASE_Y_TOLERANCE = 0.10
+
+        # For the upper portion of the frame (far from camera) we allow up to
+        # this much extra tolerance because perspective compresses Y.
+        MAX_EXTRA_Y_TOLERANCE = 0.12  # at norm_y == 0
+
+        # Overall hard cutoff (even with scaling, never match beyond this).
+        HARD_CUTOFF = 0.25
+
         best_match = None
         best_dist = float('inf')
 
@@ -124,7 +202,25 @@ def resolve_student_from_detection(app, exam_session_id, norm_x, norm_y):
                 if not student_name:
                     continue
 
-                dist = math.sqrt((seat_nx - norm_x) ** 2 + (seat_ny - norm_y) ** 2)
+                dx = abs(seat_nx - norm_x)
+                dy = abs(seat_ny - norm_y)
+
+                # Dynamic Y tolerance: wider when detection is near the top of
+                # the frame (small norm_y) where perspective compresses rows.
+                # Linear interpolation: at norm_y=0 -> base + max_extra,
+                #                       at norm_y=1 -> base
+                effective_y_tol = BASE_Y_TOLERANCE + MAX_EXTRA_Y_TOLERANCE * (1.0 - norm_y)
+
+                # Quick bounding-box reject before computing full distance
+                if dx > BASE_X_TOLERANCE or dy > effective_y_tol:
+                    continue
+
+                # Weighted Euclidean: downweight Y difference for distant
+                # detections (upper frame) by a perspective scale factor.
+                # perspective_weight ranges from 0.5 (top of frame) to 1.0 (bottom).
+                perspective_weight = 0.5 + 0.5 * norm_y
+                dist = math.sqrt(dx ** 2 + (dy * perspective_weight) ** 2)
+
                 if dist < best_dist:
                     best_dist = dist
                     best_match = {
@@ -135,7 +231,7 @@ def resolve_student_from_detection(app, exam_session_id, norm_x, norm_y):
                         'classroom_name': plan.get('classroom_name', ''),
                     }
 
-        if best_match and best_dist <= NORM_TOLERANCE:
+        if best_match and best_dist <= HARD_CUTOFF:
             return best_match
         return None
     except Exception as e:
@@ -150,6 +246,7 @@ def process_monitor_output(process, socketio_instance, app):
     """
     global monitoring_active
     frame_count = 0
+    last_frame_emit_ts = 0.0
     try:
         with app.app_context():
             while monitoring_active and process.poll() is None:
@@ -167,12 +264,23 @@ def process_monitor_output(process, socketio_instance, app):
                     if not frame_data or len(frame_data) < 100:
                         continue
                     frame_count += 1
+                    if SOCKET_EMIT_EVERY_N > 1 and (frame_count % SOCKET_EMIT_EVERY_N != 0):
+                        continue
+
+                    now_ts = time.time()
+                    if now_ts - last_frame_emit_ts < (1.0 / SOCKET_STREAM_TARGET_FPS):
+                        continue
+                    last_frame_emit_ts = now_ts
+
                     if frame_count % 30 == 0:
                         print(f"[Monitor] Emitted frame #{frame_count}")
 
                     try:
-                        # FYP style: emit raw base64 to default namespace as "frame"
-                        socketio_instance.emit('frame', frame_data, namespace='/')
+                        # Emit frame with server timestamp for latency measurement
+                        socketio_instance.emit('frame', {
+                            'frame': frame_data,
+                            'ts': int(now_ts * 1000)
+                        }, namespace='/')
                         # Optional backward compatibility event (off by default for lower latency)
                         if EMIT_LEGACY_MONITORING_FRAME:
                             socketio_instance.emit('video_frame', {'frame': f'data:image/jpeg;base64,{frame_data}'}, namespace='/monitoring')
@@ -387,8 +495,13 @@ def start_monitoring():
 
         data = request.get_json(silent=True) or {}
         session_id = data.get('session_id')
+        quality_preset = str(data.get('quality_preset') or 'balanced').strip().lower()
         if not session_id:
             return jsonify({'error': 'session_id is required'}), 400
+        if quality_preset not in MONITOR_QUALITY_PRESETS:
+            return jsonify({
+                'error': 'Invalid quality_preset. Use low_latency, balanced, or high_accuracy.'
+            }), 400
 
         session = session_model.find_by_id(session_id)
         if not session:
@@ -434,8 +547,10 @@ def start_monitoring():
             cwd=os.path.dirname(monitor_script),
             env={
                 **os.environ,
+                **MONITOR_QUALITY_PRESETS.get(quality_preset, {}),
                 'PYTHONUNBUFFERED': '1',
-                'EXAM_SESSION_FOLDER': session_folder
+                'EXAM_SESSION_FOLDER': session_folder,
+                'MONITOR_QUALITY_PRESET': quality_preset,
             }
         )
 
@@ -455,7 +570,8 @@ def start_monitoring():
             'success': True,
             'message': 'Monitoring started',
             'pid': current_process.pid,
-            'session_id': session_id
+            'session_id': session_id,
+            'quality_preset': quality_preset,
         }), 200
 
     except Exception as e:

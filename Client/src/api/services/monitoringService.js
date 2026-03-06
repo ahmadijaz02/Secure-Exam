@@ -4,9 +4,12 @@ const monitoringService = {
   /**
    * Start monitoring camera
    */
-  async startMonitoring(sessionId) {
+  async startMonitoring(sessionId, qualityPreset = 'balanced') {
     try {
-      return await apiService.post('/monitoring/start', { session_id: sessionId });
+      return await apiService.post('/monitoring/start', {
+        session_id: sessionId,
+        quality_preset: qualityPreset,
+      });
     } catch (error) {
       throw error;
     }
