@@ -16,18 +16,18 @@ SOCKET_EMIT_EVERY_N = max(1, int(os.environ.get('SOCKET_EMIT_EVERY_N', '1')))
 
 MONITOR_QUALITY_PRESETS = {
     'onnx_directml': {
-        'MONITOR_FRAME_WIDTH': '854',
-        'MONITOR_FRAME_HEIGHT': '480',
-        'YOLO_IMAGE_SIZE': '512',
-        'YOLO_PROCESS_EVERY': '4',
+        'MONITOR_FRAME_WIDTH': '1280',
+        'MONITOR_FRAME_HEIGHT': '720',
+        'YOLO_IMAGE_SIZE': '640',
+        'YOLO_PROCESS_EVERY': '3',
         'MEDIAPIPE_PROCESS_EVERY': '10',
         'MEDIAPIPE_REFINE_LANDMARKS': '0',
         'ENABLE_CLAHE': '0',
-        'STREAM_WIDTH': '320',
-        'STREAM_HEIGHT': '180',
-        'STREAM_JPEG_QUALITY': '32',
-        'STREAM_TARGET_FPS': '11',
-        'SOCKET_STREAM_TARGET_FPS': '10',
+        'STREAM_WIDTH': '1280',
+        'STREAM_HEIGHT': '720',
+        'STREAM_JPEG_QUALITY': '70',
+        'STREAM_TARGET_FPS': '8',
+        'SOCKET_STREAM_TARGET_FPS': '8',
         'CAMERA_READ_LATEST': '1',
         'CAMERA_BUFFER_FLUSH': '3',
         'SKIP_CAMERA_PROBE': '1',
@@ -62,20 +62,21 @@ MONITOR_QUALITY_PRESETS = {
         'USE_ONNX_RUNTIME_DML': '1',
     },
     'ultra_low_latency': {
-        'MONITOR_FRAME_WIDTH': '854',
-        'MONITOR_FRAME_HEIGHT': '480',
-        'YOLO_IMAGE_SIZE': '480',
-        'YOLO_PROCESS_EVERY': '5',
-        'MEDIAPIPE_PROCESS_EVERY': '12',
+        'MONITOR_FRAME_WIDTH': '960',
+        'MONITOR_FRAME_HEIGHT': '540',
+        'YOLO_IMAGE_SIZE': '512',
+        'YOLO_PROCESS_EVERY': '7',
+        'MEDIAPIPE_PROCESS_EVERY': '99',
+        'DISABLE_MEDIAPIPE': '1',
         'MEDIAPIPE_REFINE_LANDMARKS': '0',
         'ENABLE_CLAHE': '0',
-        'STREAM_WIDTH': '320',
-        'STREAM_HEIGHT': '180',
-        'STREAM_JPEG_QUALITY': '30',
-        'STREAM_TARGET_FPS': '9',
-        'SOCKET_STREAM_TARGET_FPS': '8',
+        'STREAM_WIDTH': '640',
+        'STREAM_HEIGHT': '360',
+        'STREAM_JPEG_QUALITY': '45',
+        'STREAM_TARGET_FPS': '12',
+        'SOCKET_STREAM_TARGET_FPS': '10',
         'CAMERA_READ_LATEST': '1',
-        'CAMERA_BUFFER_FLUSH': '3',
+        'CAMERA_BUFFER_FLUSH': '2',
         'SKIP_CAMERA_PROBE': '1',
         'CAMERA_WARMUP_FRAMES': '2',
         'CAMERA_WARMUP_DELAY_SEC': '0.02',
@@ -114,25 +115,27 @@ MONITOR_QUALITY_PRESETS = {
         'TILED_INFERENCE_EVERY': '4',
     },
     'amd_optimized': {
-        'MONITOR_FRAME_WIDTH': '854',
-        'MONITOR_FRAME_HEIGHT': '480',
-        'YOLO_IMAGE_SIZE': '512',
-        'YOLO_PROCESS_EVERY': '4',
-        'MEDIAPIPE_PROCESS_EVERY': '10',
+        'MONITOR_FRAME_WIDTH': '1280',
+        'MONITOR_FRAME_HEIGHT': '720',
+        'YOLO_IMAGE_SIZE': '960',
+        'YOLO_PROCESS_EVERY': '2',
+        'MEDIAPIPE_PROCESS_EVERY': '6',
         'MEDIAPIPE_REFINE_LANDMARKS': '0',
-        'ENABLE_CLAHE': '0',
-        'STREAM_WIDTH': '320',
-        'STREAM_HEIGHT': '180',
-        'STREAM_JPEG_QUALITY': '32',
-        'STREAM_TARGET_FPS': '11',
+        'ENABLE_CLAHE': '1',
+        'STREAM_WIDTH': '640',
+        'STREAM_HEIGHT': '360',
+        'STREAM_JPEG_QUALITY': '68',
+        'STREAM_TARGET_FPS': '12',
         'SOCKET_STREAM_TARGET_FPS': '10',
         'CAMERA_READ_LATEST': '1',
-        'CAMERA_BUFFER_FLUSH': '3',
+        'CAMERA_BUFFER_FLUSH': '1',
         'SKIP_CAMERA_PROBE': '1',
         'CAMERA_WARMUP_FRAMES': '2',
         'CAMERA_WARMUP_DELAY_SEC': '0.02',
         'POST_CAMERA_INIT_DELAY_SEC': '0.2',
-        'ENABLE_TILED_INFERENCE': '0',
+        'ENABLE_TILED_INFERENCE': '1',
+        'TILED_INFERENCE_EVERY': '3',
+        'YOLO_MAX_DETECTIONS': '60',
         'FORCE_PREDICT_ONLY': '1',
         'USE_ONNX_RUNTIME_DML': '1',
     },
@@ -603,7 +606,7 @@ def process_monitor_output(process, socketio_instance, app):
 @jwt_required()
 def start_monitoring():
     """Start monitoring camera - launch monitor.py and stream frames via Socket.IO"""
-    global current_process, monitoring_active
+    global current_process, monitoring_active, SOCKET_STREAM_TARGET_FPS, SOCKET_EMIT_EVERY_N
 
     try:
         current_user_id = get_jwt_identity()
@@ -627,6 +630,18 @@ def start_monitoring():
             return jsonify({
                 'error': 'Invalid quality_preset. Use onnx_directml, yolo_only, ultra_low_latency, low_latency, balanced, amd_optimized, or high_accuracy.'
             }), 400
+
+        # Apply socket emission throttle from selected preset in the parent process.
+        # (Preset env vars are also passed to monitor.py child process.)
+        selected_preset = MONITOR_QUALITY_PRESETS.get(quality_preset, {})
+        try:
+            SOCKET_STREAM_TARGET_FPS = max(1, int(selected_preset.get('SOCKET_STREAM_TARGET_FPS', SOCKET_STREAM_TARGET_FPS)))
+        except (TypeError, ValueError):
+            pass
+        try:
+            SOCKET_EMIT_EVERY_N = max(1, int(selected_preset.get('SOCKET_EMIT_EVERY_N', SOCKET_EMIT_EVERY_N)))
+        except (TypeError, ValueError):
+            pass
 
         session = session_model.find_by_id(session_id)
         if not session:

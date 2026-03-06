@@ -91,10 +91,11 @@ def patch_ultralytics_nms_for_directml():
 
 FRAME_WIDTH = int(os.environ.get("MONITOR_FRAME_WIDTH", "1280"))
 FRAME_HEIGHT = int(os.environ.get("MONITOR_FRAME_HEIGHT", "720"))
-STREAM_WIDTH = int(os.environ.get("STREAM_WIDTH", "512"))
-STREAM_HEIGHT = int(os.environ.get("STREAM_HEIGHT", "288"))
-STREAM_JPEG_QUALITY = max(10, min(90, int(os.environ.get("STREAM_JPEG_QUALITY", "48"))))
+STREAM_WIDTH = int(os.environ.get("STREAM_WIDTH", "640"))
+STREAM_HEIGHT = int(os.environ.get("STREAM_HEIGHT", "360"))
+STREAM_JPEG_QUALITY = max(10, min(90, int(os.environ.get("STREAM_JPEG_QUALITY", "68"))))
 STREAM_TARGET_FPS = max(1, int(os.environ.get("STREAM_TARGET_FPS", "12")))
+YOLO_MAX_DETECTIONS = max(1, int(os.environ.get("YOLO_MAX_DETECTIONS", "50")))
 YOLO_PROCESS_EVERY_N_FRAMES = max(1, int(os.environ.get("YOLO_PROCESS_EVERY", "2")))
 MEDIAPIPE_PROCESS_EVERY_N_FRAMES = max(1, int(os.environ.get("MEDIAPIPE_PROCESS_EVERY", "4")))
 DISABLE_MEDIAPIPE = os.environ.get("DISABLE_MEDIAPIPE", "0").lower() in ("1", "true", "yes", "on")
@@ -127,16 +128,24 @@ os.makedirs(output_folder, exist_ok=True)
 
 PHONE_SEARCH_CONF = 0.20
 PHONE_MIN_CONF = 0.35
-PHONE_PERSISTENCE = 3
-PHONE_NO_TRACK_PERSISTENCE = 2
+PHONE_PERSISTENCE = 2
+PHONE_NO_TRACK_PERSISTENCE = 1
 PHONE_NO_TRACK_MIN_CONF = 0.32
 PHONE_MIN_AREA = 400
 PHONE_MAX_AREA = 80000
+PHONE_MIN_AREA_FRACTION = float(os.environ.get("PHONE_MIN_AREA_FRACTION", "0.0004"))
+PHONE_MAX_AREA_FRACTION = float(os.environ.get("PHONE_MAX_AREA_FRACTION", "0.22"))
 PHONE_MIN_ASPECT = 0.2
 PHONE_MAX_ASPECT = 5.0
+PHONE_HIGH_CONF_OVERRIDE = float(os.environ.get("PHONE_HIGH_CONF_OVERRIDE", "0.80"))
+PHONE_REQUIRE_PERSON_CONTEXT = os.environ.get("PHONE_REQUIRE_PERSON_CONTEXT", "0").lower() in ("1", "true", "yes", "on")
+PHONE_NO_PERSON_MIN_CONF = float(os.environ.get("PHONE_NO_PERSON_MIN_CONF", "0.55"))
+PHONE_EDGE_MARGIN_FRACTION = float(os.environ.get("PHONE_EDGE_MARGIN_FRACTION", "0.02"))
+PHONE_EDGE_STRICT_CONF = float(os.environ.get("PHONE_EDGE_STRICT_CONF", "0.75"))
+PHONE_PERSON_EXPAND_RATIO = float(os.environ.get("PHONE_PERSON_EXPAND_RATIO", "0.20"))
 
-GENERAL_DISPLAY_CONF = 0.40
-WATCH_DISPLAY_CONF = 0.25
+GENERAL_DISPLAY_CONF = 0.30
+WATCH_DISPLAY_CONF = 0.22
 
 # ---- Custom model class names: Hand Gesture, Head, Phone, paper, person, watch ----
 # Since the model has NO furniture classes, misclassifications happen when the
@@ -233,7 +242,15 @@ def run_tiled_inference(model, img, conf, iou, imgsz, half, use_tracking):
     for (ty1, ty2, tx1, tx2) in tiles:
         crop = img[ty1:ty2, tx1:tx2]
         try:
-            tile_results = model.predict(crop, conf=conf, iou=iou, imgsz=imgsz, verbose=False, half=half)
+            tile_results = model.predict(
+                crop,
+                conf=conf,
+                iou=iou,
+                imgsz=imgsz,
+                max_det=YOLO_MAX_DETECTIONS,
+                verbose=False,
+                half=half
+            )
         except Exception:
             continue
         if tile_results[0].boxes:
@@ -314,6 +331,42 @@ def compute_iou(box_a, box_b):
     area_b = max(0, bx2 - bx1) * max(0, by2 - by1)
     union = area_a + area_b - inter
     return (inter / union) if union > 0 else 0.0
+
+
+def phone_has_person_context(phone_box, person_boxes, frame_w, frame_h):
+    """Validate that a phone-like box is spatially consistent with a person.
+
+    This suppresses common background false positives (e.g., wall patterns) by
+    requiring the candidate phone to be inside or near at least one person box.
+    """
+    if not person_boxes:
+        return False
+
+    x1, y1, x2, y2 = phone_box
+    cx = (x1 + x2) // 2
+    cy = (y1 + y2) // 2
+
+    for (px1, py1, px2, py2) in person_boxes:
+        pw = max(1, px2 - px1)
+        ph = max(1, py2 - py1)
+        expand_x = int(pw * PHONE_PERSON_EXPAND_RATIO)
+        expand_y = int(ph * PHONE_PERSON_EXPAND_RATIO)
+
+        ex1 = max(0, px1 - expand_x)
+        ey1 = max(0, py1 - expand_y)
+        ex2 = min(frame_w - 1, px2 + expand_x)
+        ey2 = min(frame_h - 1, py2 + expand_y)
+
+        # Accept if phone center sits in expanded person region.
+        if ex1 <= cx <= ex2 and ey1 <= cy <= ey2:
+            return True
+
+        # Also accept small overlap with expanded person region.
+        iou = compute_iou((x1, y1, x2, y2), (ex1, ey1, ex2, ey2))
+        if iou > 0.005:
+            return True
+
+    return False
 
 
 def class_aware_nms(detections, iou_threshold=0.45):
@@ -609,6 +662,7 @@ def run_system():
     onnx_session = None
     onnx_input_name = None
     onnx_output_names = None
+    onnx_input_size = YOLO_IMAGE_SIZE
     model = None
 
     if prefer_onnx and ort is None:
@@ -626,8 +680,28 @@ def run_system():
                 providers = ['DmlExecutionProvider', 'CPUExecutionProvider']
 
             onnx_session = ort.InferenceSession(weights_onnx_path, providers=providers)
-            onnx_input_name = onnx_session.get_inputs()[0].name
+            onnx_input_meta = onnx_session.get_inputs()[0]
+            onnx_input_name = onnx_input_meta.name
             onnx_output_names = [output.name for output in onnx_session.get_outputs()]
+
+            # Some exported ONNX models are fixed-shape (e.g. 512x512).
+            # Read input tensor shape and use it instead of env YOLO_IMAGE_SIZE.
+            input_shape = onnx_input_meta.shape
+            parsed_h = None
+            parsed_w = None
+            if isinstance(input_shape, (list, tuple)) and len(input_shape) >= 4:
+                if isinstance(input_shape[2], int):
+                    parsed_h = input_shape[2]
+                if isinstance(input_shape[3], int):
+                    parsed_w = input_shape[3]
+
+            if parsed_h and parsed_w and parsed_h > 0 and parsed_w > 0:
+                if parsed_h == parsed_w:
+                    onnx_input_size = parsed_h
+                else:
+                    onnx_input_size = (parsed_h, parsed_w)
+
+            emit(f"Using ONNX input size: {onnx_input_size}")
             use_onnx_runtime = True
             emit(f"Using ONNX Runtime backend with providers: {onnx_session.get_providers()}")
         except Exception as exc:
@@ -807,7 +881,7 @@ def run_system():
                         onnx_input_name,
                         onnx_output_names,
                         enhanced_img,
-                        YOLO_IMAGE_SIZE,
+                        onnx_input_size,
                         PHONE_SEARCH_CONF,
                         0.45,
                     )
@@ -818,16 +892,41 @@ def run_system():
             else:
                 try:
                     if use_tracking:
-                        results = model.track(enhanced_img, persist=True, conf=PHONE_SEARCH_CONF, iou=0.45, imgsz=YOLO_IMAGE_SIZE, verbose=False, half=infer_half)
+                        results = model.track(
+                            enhanced_img,
+                            persist=True,
+                            conf=PHONE_SEARCH_CONF,
+                            iou=0.45,
+                            imgsz=YOLO_IMAGE_SIZE,
+                            max_det=YOLO_MAX_DETECTIONS,
+                            verbose=False,
+                            half=infer_half
+                        )
                     else:
-                        results = model.predict(enhanced_img, conf=PHONE_SEARCH_CONF, iou=0.45, imgsz=YOLO_IMAGE_SIZE, verbose=False, half=infer_half)
+                        results = model.predict(
+                            enhanced_img,
+                            conf=PHONE_SEARCH_CONF,
+                            iou=0.45,
+                            imgsz=YOLO_IMAGE_SIZE,
+                            max_det=YOLO_MAX_DETECTIONS,
+                            verbose=False,
+                            half=infer_half
+                        )
                     directml_runtime_errors = 0
                 except RuntimeError as exc:
                     error_text = str(exc)
                     if "Cannot set version_counter for inference tensor" in error_text:
                         emit("Detected inference tensor compatibility error. Switching to prediction-only mode...")
                         use_tracking = False
-                        results = model.predict(enhanced_img, conf=PHONE_SEARCH_CONF, iou=0.45, imgsz=YOLO_IMAGE_SIZE, verbose=False, half=infer_half)
+                        results = model.predict(
+                            enhanced_img,
+                            conf=PHONE_SEARCH_CONF,
+                            iou=0.45,
+                            imgsz=YOLO_IMAGE_SIZE,
+                            max_det=YOLO_MAX_DETECTIONS,
+                            verbose=False,
+                            half=infer_half
+                        )
                         directml_runtime_errors = 0
                     elif "The parameter is incorrect" in error_text and backend == "DirectML" and not using_cpu_fallback:
                         directml_runtime_errors += 1
@@ -838,7 +937,15 @@ def run_system():
                         use_tracking = False
                         model.predictor = None
                         try:
-                            results = model.predict(enhanced_img, conf=PHONE_SEARCH_CONF, iou=0.45, imgsz=YOLO_IMAGE_SIZE, verbose=False, half=False)
+                            results = model.predict(
+                                enhanced_img,
+                                conf=PHONE_SEARCH_CONF,
+                                iou=0.45,
+                                imgsz=YOLO_IMAGE_SIZE,
+                                max_det=YOLO_MAX_DETECTIONS,
+                                verbose=False,
+                                half=False
+                            )
                             directml_runtime_errors = 0
                         except RuntimeError:
                             if directml_runtime_errors >= DIRECTML_ERROR_BEFORE_CPU_FALLBACK:
@@ -849,7 +956,15 @@ def run_system():
                                 model.to(device)
                                 model.predictor = None
                                 infer_half = False
-                                results = model.predict(enhanced_img, conf=PHONE_SEARCH_CONF, iou=0.45, imgsz=YOLO_IMAGE_SIZE, verbose=False, half=False)
+                                results = model.predict(
+                                    enhanced_img,
+                                    conf=PHONE_SEARCH_CONF,
+                                    iou=0.45,
+                                    imgsz=YOLO_IMAGE_SIZE,
+                                    max_det=YOLO_MAX_DETECTIONS,
+                                    verbose=False,
+                                    half=False
+                                )
                             else:
                                 continue
                     else:
@@ -995,14 +1110,44 @@ def run_system():
 
         current_frame_phone_ids = []
         no_track_phone_seen = False
+        frame_h, frame_w = img.shape[:2]
+        frame_area = max(1, frame_h * frame_w)
+        # Keep old absolute thresholds as floor, but scale for higher resolutions.
+        effective_phone_min_area = max(PHONE_MIN_AREA, int(frame_area * PHONE_MIN_AREA_FRACTION))
+        effective_phone_max_area = max(PHONE_MAX_AREA, int(frame_area * PHONE_MAX_AREA_FRACTION))
+        edge_margin_x = int(frame_w * PHONE_EDGE_MARGIN_FRACTION)
+        edge_margin_y = int(frame_h * PHONE_EDGE_MARGIN_FRACTION)
         for (x1, y1, x2, y2, conf, track_id) in phone_candidates:
             w, h = x2 - x1, y2 - y1
             area = w * h
             aspect = w / h if h != 0 else 0
-            if area < PHONE_MIN_AREA or area > PHONE_MAX_AREA:
+            is_high_conf_phone = conf >= PHONE_HIGH_CONF_OVERRIDE
+
+            # Keep strict area checks for moderate confidence, but allow
+            # very high-confidence phone detections to pass.
+            if (not is_high_conf_phone) and (area < effective_phone_min_area or area > effective_phone_max_area):
                 continue
             if aspect < PHONE_MIN_ASPECT or aspect > PHONE_MAX_ASPECT:
                 continue
+
+            # Background artifacts near frame borders are frequently false phones.
+            near_edge = (
+                x1 <= edge_margin_x
+                or y1 <= edge_margin_y
+                or x2 >= (frame_w - edge_margin_x)
+                or y2 >= (frame_h - edge_margin_y)
+            )
+            # Keep edge suppression for likely false positives, but do not block
+            # very high-confidence detections that happen near borders.
+            if (not is_high_conf_phone) and near_edge and conf < PHONE_EDGE_STRICT_CONF:
+                continue
+
+            # Phone detection is independent from hand/person presence by default.
+            # Optional person-context gating can be re-enabled via env if needed.
+            if PHONE_REQUIRE_PERSON_CONTEXT:
+                has_person_context = phone_has_person_context((x1, y1, x2, y2), person_boxes, frame_w, frame_h)
+                if not has_person_context and conf < PHONE_NO_PERSON_MIN_CONF:
+                    continue
 
             phone_cx, phone_cy = (x1 + x2) // 2, (y1 + y2) // 2
 

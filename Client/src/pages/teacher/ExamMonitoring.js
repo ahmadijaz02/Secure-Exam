@@ -24,6 +24,7 @@ const ExamMonitoring = () => {
   const [streamLatencyMs, setStreamLatencyMs] = useState(null);
   const [lastFrameAt, setLastFrameAt] = useState(null);
   const [isSocketConnected, setIsSocketConnected] = useState(false);
+  const [bootElapsedSec, setBootElapsedSec] = useState(0);
 
   const videoImgRef = useRef(null);
   const latestFrameRef = useRef(null);
@@ -32,6 +33,14 @@ const ExamMonitoring = () => {
   const receivedFramesRef = useRef(0);
   const lastStatsUpdateRef = useRef(0);
   const prevFramesRef = useRef(0);
+  const bootStartMsRef = useRef(null);
+
+  const formatDuration = useCallback((totalSeconds) => {
+    const safeSeconds = Math.max(0, Number(totalSeconds) || 0);
+    const mins = Math.floor(safeSeconds / 60);
+    const secs = safeSeconds % 60;
+    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  }, []);
 
   const handleFrame = useCallback((data) => {
     const frameData = typeof data === 'string' ? data : data?.frame;
@@ -167,6 +176,28 @@ const ExamMonitoring = () => {
     }
   }, [examSessionId, navigate, notification]);
 
+  useEffect(() => {
+    if (isMonitoring && !hasFrame) {
+      if (!bootStartMsRef.current) {
+        bootStartMsRef.current = Date.now();
+        setBootElapsedSec(0);
+      }
+
+      const tick = () => {
+        const elapsed = Math.floor((Date.now() - bootStartMsRef.current) / 1000);
+        setBootElapsedSec(Math.max(0, elapsed));
+      };
+
+      tick();
+      const timerId = setInterval(tick, 1000);
+      return () => clearInterval(timerId);
+    }
+
+    bootStartMsRef.current = null;
+    setBootElapsedSec(0);
+    return undefined;
+  }, [isMonitoring, hasFrame]);
+
   const stopMonitoring = async () => {
     try {
       setIsLoading(true);
@@ -284,6 +315,7 @@ const ExamMonitoring = () => {
                   Frames: {frameCount}
                   {` • FPS: ${streamFps}`}
                   {streamLatencyMs !== null ? ` • Latency: ${streamLatencyMs}ms` : ''}
+                  {!hasFrame ? ` • Boot: ${formatDuration(bootElapsedSec)}` : ''}
                   {lastFrameAt ? ` • Last: ${lastFrameAt.toLocaleTimeString()}` : ''}
                 </p>
               )}
@@ -312,6 +344,11 @@ const ExamMonitoring = () => {
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
                     </svg>
                     <p>{isMonitoring ? 'Waiting for video feed...' : 'Click Start Monitoring to begin'}</p>
+                    {isMonitoring && (
+                      <p className="mt-2 text-sm text-gray-400">
+                        Boot Timer: {formatDuration(bootElapsedSec)}
+                      </p>
+                    )}
                   </div>
                 )}
               </div>
