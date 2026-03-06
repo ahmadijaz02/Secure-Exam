@@ -4,7 +4,7 @@ const monitoringService = {
   /**
    * Start monitoring camera
    */
-  async startMonitoring(sessionId, qualityPreset = 'balanced') {
+  async startMonitoring(sessionId, qualityPreset = 'amd_optimized') {
     try {
       return await apiService.post('/monitoring/start', {
         session_id: sessionId,

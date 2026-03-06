@@ -14,11 +14,17 @@ import sys
 import base64
 import io
 import pickle
+import threading
 
 try:
     import torch_directml
 except Exception:
     torch_directml = None
+
+try:
+    import onnxruntime as ort
+except Exception:
+    ort = None
 
 
 def patch_ultralytics_inference_mode():
@@ -91,11 +97,17 @@ STREAM_JPEG_QUALITY = max(10, min(90, int(os.environ.get("STREAM_JPEG_QUALITY", 
 STREAM_TARGET_FPS = max(1, int(os.environ.get("STREAM_TARGET_FPS", "12")))
 YOLO_PROCESS_EVERY_N_FRAMES = max(1, int(os.environ.get("YOLO_PROCESS_EVERY", "2")))
 MEDIAPIPE_PROCESS_EVERY_N_FRAMES = max(1, int(os.environ.get("MEDIAPIPE_PROCESS_EVERY", "4")))
+DISABLE_MEDIAPIPE = os.environ.get("DISABLE_MEDIAPIPE", "0").lower() in ("1", "true", "yes", "on")
 YOLO_IMAGE_SIZE = int(os.environ.get("YOLO_IMAGE_SIZE", "960"))
 CAMERA_FPS = int(os.environ.get("MONITOR_CAMERA_FPS", "18"))
+USE_ONNX_RUNTIME_DML = os.environ.get("USE_ONNX_RUNTIME_DML", "auto").lower()
 DIRECTML_ERROR_BEFORE_CPU_FALLBACK = max(1, int(os.environ.get("DIRECTML_ERROR_BEFORE_CPU_FALLBACK", "5")))
 CAMERA_READ_LATEST = os.environ.get("CAMERA_READ_LATEST", "1").lower() in ("1", "true", "yes", "on")
 CAMERA_BUFFER_FLUSH = max(0, int(os.environ.get("CAMERA_BUFFER_FLUSH", "2")))
+SKIP_CAMERA_PROBE = os.environ.get("SKIP_CAMERA_PROBE", "1").lower() in ("1", "true", "yes", "on")
+CAMERA_WARMUP_FRAMES = max(0, int(os.environ.get("CAMERA_WARMUP_FRAMES", "2")))
+CAMERA_WARMUP_DELAY_SEC = max(0.0, float(os.environ.get("CAMERA_WARMUP_DELAY_SEC", "0.02")))
+POST_CAMERA_INIT_DELAY_SEC = max(0.0, float(os.environ.get("POST_CAMERA_INIT_DELAY_SEC", "0.2")))
 
 # Tiled inference for small/distant object detection
 ENABLE_TILED_INFERENCE = os.environ.get("ENABLE_TILED_INFERENCE", "1").lower() in ("1", "true", "yes", "on")
@@ -133,6 +145,7 @@ WATCH_DISPLAY_CONF = 0.25
 
 # Classes that are ALWAYS interesting for alerts — others are contextual.
 ALERT_CLASSES = {'phone', 'watch', 'paper'}
+OPERATIONAL_CLASSES = {'person', 'phone', 'watch', 'paper'}
 
 # Maximum box area (fraction of frame) — detections covering >25% of the frame
 # are almost certainly furniture, walls, or false positives.
@@ -154,6 +167,9 @@ CLASS_MIN_CONF = {
     'hand gesture': 0.20,
 }
 
+# Keep class order aligned with training labels in best (3).pt.
+ONNX_CLASS_NAMES = ['hand gesture', 'head', 'phone', 'paper', 'person', 'watch']
+
 LOOK_X_THRESHOLD = 0.025
 LOOK_Y_UP_THRESHOLD = 0.03
 
@@ -161,19 +177,23 @@ HAND_MOUTH_THRESHOLD = 0.15
 HAND_MOTION_THRESHOLD = 0.005
 
 mp_face_mesh = mp.solutions.face_mesh
-face_mesh = mp_face_mesh.FaceMesh(
-    min_detection_confidence=0.5,
-    min_tracking_confidence=0.5,
-    refine_landmarks=MEDIAPIPE_REFINE_LANDMARKS,
-    max_num_faces=1
-)
+face_mesh = None
+if not DISABLE_MEDIAPIPE:
+    face_mesh = mp_face_mesh.FaceMesh(
+        min_detection_confidence=0.5,
+        min_tracking_confidence=0.5,
+        refine_landmarks=MEDIAPIPE_REFINE_LANDMARKS,
+        max_num_faces=1
+    )
 
 mp_hands = mp.solutions.hands
-hands = mp_hands.Hands(
-    min_detection_confidence=0.5,
-    min_tracking_confidence=0.5,
-    max_num_hands=2
-)
+hands = None
+if not DISABLE_MEDIAPIPE:
+    hands = mp_hands.Hands(
+        min_detection_confidence=0.5,
+        min_tracking_confidence=0.5,
+        max_num_hands=2
+    )
 
 def enhance_frame_clahe(img):
     """Apply CLAHE contrast enhancement to improve detection of distant/small objects."""
@@ -262,6 +282,165 @@ def run_tiled_inference(model, img, conf, iou, imgsz, half, use_tracking):
     return keep
 
 
+def letterbox(image, new_shape=640, color=(114, 114, 114)):
+    """Resize and pad image while preserving aspect ratio."""
+    shape = image.shape[:2]  # (h, w)
+    if isinstance(new_shape, int):
+        new_shape = (new_shape, new_shape)
+
+    r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
+    new_unpad = (int(round(shape[1] * r)), int(round(shape[0] * r)))
+    dw = (new_shape[1] - new_unpad[0]) / 2
+    dh = (new_shape[0] - new_unpad[1]) / 2
+
+    if shape[::-1] != new_unpad:
+        image = cv2.resize(image, new_unpad, interpolation=cv2.INTER_LINEAR)
+
+    top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
+    left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
+    image = cv2.copyMakeBorder(image, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)
+    return image, r, dw, dh
+
+
+def compute_iou(box_a, box_b):
+    ax1, ay1, ax2, ay2 = box_a
+    bx1, by1, bx2, by2 = box_b
+    ix1 = max(ax1, bx1)
+    iy1 = max(ay1, by1)
+    ix2 = min(ax2, bx2)
+    iy2 = min(ay2, by2)
+    inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+    area_a = max(0, ax2 - ax1) * max(0, ay2 - ay1)
+    area_b = max(0, bx2 - bx1) * max(0, by2 - by1)
+    union = area_a + area_b - inter
+    return (inter / union) if union > 0 else 0.0
+
+
+def class_aware_nms(detections, iou_threshold=0.45):
+    """Run simple class-aware NMS over decoded ONNX detections."""
+    kept = []
+    by_class = {}
+    for det in detections:
+        by_class.setdefault(det[4], []).append(det)
+
+    for _, class_dets in by_class.items():
+        class_dets.sort(key=lambda d: d[5], reverse=True)
+        accepted = []
+        for det in class_dets:
+            box_det = det[:4]
+            if all(compute_iou(box_det, keep_det[:4]) <= iou_threshold for keep_det in accepted):
+                accepted.append(det)
+        kept.extend(accepted)
+
+    return kept
+
+
+def decode_onnx_predictions(raw_output, original_shape, ratio, dw, dh, conf_threshold=0.2, iou_threshold=0.45):
+    """Decode YOLO ONNX output to (x1,y1,x2,y2,label,conf,track_id) tuples."""
+    if raw_output is None:
+        return []
+
+    pred = raw_output
+
+    # Ultralytics ONNX with built-in NMS commonly returns [1, max_det, 6]
+    # where columns are [x1, y1, x2, y2, conf, class_id].
+    if pred.ndim == 3 and pred.shape[-1] == 6:
+        pred = pred[0]
+        h, w = original_shape[:2]
+        detections = []
+        for row in pred:
+            x1, y1, x2, y2, conf, class_id = row.tolist()
+            conf = float(conf)
+            if conf < conf_threshold:
+                continue
+
+            class_id = int(class_id)
+            class_name = ONNX_CLASS_NAMES[class_id] if 0 <= class_id < len(ONNX_CLASS_NAMES) else f'class_{class_id}'
+            class_name = class_name.lower()
+
+            # Keep only classes relevant for current monitoring logic.
+            if class_name not in OPERATIONAL_CLASSES:
+                continue
+
+            # Convert from letterboxed model coordinates back to source image coords.
+            x1 = (x1 - dw) / ratio
+            y1 = (y1 - dh) / ratio
+            x2 = (x2 - dw) / ratio
+            y2 = (y2 - dh) / ratio
+
+            x1 = int(max(0, min(w - 1, x1)))
+            y1 = int(max(0, min(h - 1, y1)))
+            x2 = int(max(0, min(w - 1, x2)))
+            y2 = int(max(0, min(h - 1, y2)))
+            if x2 <= x1 or y2 <= y1:
+                continue
+
+            detections.append((x1, y1, x2, y2, class_name, conf, -1))
+
+        # Output is already NMS-ed by export path, but a light class-aware pass is safe.
+        return class_aware_nms(detections, iou_threshold=iou_threshold)
+
+    if pred.ndim == 3:
+        pred = pred[0]
+        if pred.shape[0] < pred.shape[1]:
+            pred = pred.T
+    elif pred.ndim != 2:
+        return []
+
+    if pred.shape[1] < 5:
+        return []
+
+    boxes = pred[:, :4]
+    cls_scores = pred[:, 4:]
+    if cls_scores.size == 0:
+        return []
+
+    class_ids = np.argmax(cls_scores, axis=1)
+    confidences = cls_scores[np.arange(len(cls_scores)), class_ids]
+
+    h, w = original_shape[:2]
+    detections = []
+    for idx, conf in enumerate(confidences):
+        conf = float(conf)
+        if conf < conf_threshold:
+            continue
+
+        cx, cy, bw, bh = boxes[idx]
+        x1 = (cx - bw / 2 - dw) / ratio
+        y1 = (cy - bh / 2 - dh) / ratio
+        x2 = (cx + bw / 2 - dw) / ratio
+        y2 = (cy + bh / 2 - dh) / ratio
+
+        x1 = int(max(0, min(w - 1, x1)))
+        y1 = int(max(0, min(h - 1, y1)))
+        x2 = int(max(0, min(w - 1, x2)))
+        y2 = int(max(0, min(h - 1, y2)))
+        if x2 <= x1 or y2 <= y1:
+            continue
+
+        class_id = int(class_ids[idx])
+        class_name = ONNX_CLASS_NAMES[class_id] if 0 <= class_id < len(ONNX_CLASS_NAMES) else f'class_{class_id}'
+        class_name = class_name.lower()
+        if class_name not in OPERATIONAL_CLASSES:
+            continue
+        detections.append((x1, y1, x2, y2, class_name, conf, -1))
+
+    return class_aware_nms(detections, iou_threshold=iou_threshold)
+
+
+def run_onnx_inference(session, input_name, output_names, image, imgsz, conf, iou):
+    """Run one ONNX inference step and decode to common detection tuple format."""
+    padded, ratio, dw, dh = letterbox(image, new_shape=imgsz)
+    rgb = cv2.cvtColor(padded, cv2.COLOR_BGR2RGB)
+    tensor = rgb.astype(np.float32) / 255.0
+    tensor = np.transpose(tensor, (2, 0, 1))[None, ...]
+
+    outputs = session.run(output_names, {input_name: tensor})
+    if not outputs:
+        return []
+    return decode_onnx_predictions(outputs[0], image.shape, ratio, dw, dh, conf_threshold=conf, iou_threshold=iou)
+
+
 def emit(msg):
     print(msg)
     sys.stdout.flush()
@@ -277,6 +456,14 @@ def emit_frame(img):
     except Exception as e:
         print(f"FRAME_ERROR:{str(e)}")
         sys.stdout.flush()
+
+
+def write_alert_image_async(image, filename):
+    """Write alert image in background to avoid blocking inference/stream loop."""
+    try:
+        cv2.imwrite(filename, image)
+    except Exception as exc:
+        emit(f"ALERT_WRITE_ERROR:{exc}")
 
 def save_alert(img, reason, cooldown_state, bbox_center=None):
     """Save an alert image and emit an ALERT line.
@@ -312,7 +499,11 @@ def save_alert(img, reason, cooldown_state, bbox_center=None):
         os.makedirs(target_dir, exist_ok=True)
         timestamp = now.strftime("%Y%m%d_%H%M%S")
         filename = os.path.join(target_dir, f"ALERT_{reason}_{timestamp}.jpg")
-        cv2.imwrite(filename, img)
+        threading.Thread(
+            target=write_alert_image_async,
+            args=(img.copy(), filename),
+            daemon=True,
+        ).start()
         # Extended ALERT format includes bounding-box centre + frame size so the
         # backend can resolve which student/seat the detection belongs to.
         if bbox_center:
@@ -405,23 +596,70 @@ def run_system():
     patch_ultralytics_inference_mode()
     patch_ultralytics_nms_for_directml()
     configure_torch_safe_globals()
-    # Resolve absolute path to weights regardless of where script is launched
-    weights_path = os.path.join(os.path.dirname(__file__), "best (3).pt")
-    model = load_yolo_model_with_compat(weights_path)
-    model.to(device)
+
+    # Resolve absolute paths to model files regardless of where script is launched.
+    weights_pt_path = os.path.join(os.path.dirname(__file__), "best (3).pt")
+    weights_onnx_path = os.path.join(os.path.dirname(__file__), "best (3).onnx")
+
+    prefer_onnx = USE_ONNX_RUNTIME_DML in ("1", "true", "yes", "on")
+    if USE_ONNX_RUNTIME_DML == "auto":
+        prefer_onnx = backend == "DirectML"
+
+    use_onnx_runtime = False
+    onnx_session = None
+    onnx_input_name = None
+    onnx_output_names = None
+    model = None
+
+    if prefer_onnx and ort is None:
+        emit("ONNX Runtime requested but not installed. Falling back to Ultralytics backend.")
+
+    if prefer_onnx and ort is not None:
+        try:
+            if not os.path.exists(weights_onnx_path):
+                emit("ONNX model not found. Exporting from PyTorch checkpoint...")
+                exporter = load_yolo_model_with_compat(weights_pt_path)
+                exporter.export(format='onnx', imgsz=YOLO_IMAGE_SIZE, dynamic=False, simplify=False, opset=12)
+
+            providers = ['CPUExecutionProvider']
+            if backend == "DirectML":
+                providers = ['DmlExecutionProvider', 'CPUExecutionProvider']
+
+            onnx_session = ort.InferenceSession(weights_onnx_path, providers=providers)
+            onnx_input_name = onnx_session.get_inputs()[0].name
+            onnx_output_names = [output.name for output in onnx_session.get_outputs()]
+            use_onnx_runtime = True
+            emit(f"Using ONNX Runtime backend with providers: {onnx_session.get_providers()}")
+        except Exception as exc:
+            emit(f"Warning: ONNX Runtime init failed, falling back to Ultralytics backend: {exc}")
+
+    if not use_onnx_runtime:
+        model = load_yolo_model_with_compat(weights_pt_path)
+        model.to(device)
+
     infer_half = backend == "CUDA"
     using_cpu_fallback = backend == "CPU"
-    use_tracking = True
+    # Tracking can be unstable/expensive on DirectML paths; default to predict-only there.
+    force_predict_only = os.environ.get("FORCE_PREDICT_ONLY", "auto").lower()
+    if force_predict_only in ("1", "true", "yes", "on"):
+        use_tracking = False
+    elif force_predict_only in ("0", "false", "no", "off"):
+        use_tracking = True
+    else:
+        use_tracking = (backend == "CUDA") and (not use_onnx_runtime)
     
-    # Check available cameras
-    emit("Checking available cameras...")
-    for i in range(3):  # Check first 3 camera indices
-        test_cap = cv2.VideoCapture(i)
-        if test_cap.isOpened():
-            emit(f"Camera {i} is available")
-            test_cap.release()
-        else:
-            emit(f"Camera {i} not available")
+    # Camera probing can delay first frame on some drivers; skip by default.
+    if not SKIP_CAMERA_PROBE:
+        emit("Checking available cameras...")
+        for i in range(3):  # Check first 3 camera indices
+            test_cap = cv2.VideoCapture(i)
+            if test_cap.isOpened():
+                emit(f"Camera {i} is available")
+                test_cap.release()
+            else:
+                emit(f"Camera {i} not available")
+    else:
+        emit("Skipping camera probe for faster startup")
     
     cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)  # Use DirectShow on Windows
     if not cap.isOpened():
@@ -443,13 +681,15 @@ def run_system():
     except Exception:
         pass
     
-    # Warm up camera
+    # Warm up camera (short by default for faster first-frame latency)
     emit("Warming up camera...")
-    for i in range(5):
+    for _ in range(CAMERA_WARMUP_FRAMES):
         cap.read()
-        time.sleep(0.1)
-    
-    time.sleep(1)  # Give camera time to initialize
+        if CAMERA_WARMUP_DELAY_SEC > 0:
+            time.sleep(CAMERA_WARMUP_DELAY_SEC)
+
+    if POST_CAMERA_INIT_DELAY_SEC > 0:
+        time.sleep(POST_CAMERA_INIT_DELAY_SEC)
     emit(f"Camera initialized successfully. Resolution: {int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))}")
     emit("System Active")
 
@@ -468,7 +708,7 @@ def run_system():
     emit(
         "Performance mode -> "
         f"yolo_every={YOLO_PROCESS_EVERY_N_FRAMES}, "
-        f"mediapipe_every={MEDIAPIPE_PROCESS_EVERY_N_FRAMES}, "
+        f"mediapipe_every={'off' if DISABLE_MEDIAPIPE else MEDIAPIPE_PROCESS_EVERY_N_FRAMES}, "
         f"yolo_imgsz={YOLO_IMAGE_SIZE}, camera_fps={CAMERA_FPS}, stream_fps={STREAM_TARGET_FPS}, "
         f"tiled={ENABLE_TILED_INFERENCE}, tiled_every={TILED_INFERENCE_EVERY_N}, clahe={ENABLE_CLAHE}, "
         f"read_latest={CAMERA_READ_LATEST}, buffer_flush={CAMERA_BUFFER_FLUSH}"
@@ -477,7 +717,7 @@ def run_system():
     while True:
         frame_index += 1
         should_process_yolo = frame_index % YOLO_PROCESS_EVERY_N_FRAMES == 0
-        should_process_mediapipe = frame_index % MEDIAPIPE_PROCESS_EVERY_N_FRAMES == 0
+        should_process_mediapipe = (not DISABLE_MEDIAPIPE) and (frame_index % MEDIAPIPE_PROCESS_EVERY_N_FRAMES == 0)
 
         if CAMERA_READ_LATEST and CAMERA_BUFFER_FLUSH > 0:
             for _ in range(CAMERA_BUFFER_FLUSH):
@@ -499,30 +739,34 @@ def run_system():
         img_rgb = None
         all_mouth_centers = []
         current_frame_fingertips = []
+        face_results = None
+        hand_results = None
 
-        if should_process_mediapipe or cached_face_results is None:
-            if img_rgb is None:
-                img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            cached_face_results = face_mesh.process(img_rgb)
-        face_results = cached_face_results
-        if face_results.multi_face_landmarks:
-            for face_landmarks in face_results.multi_face_landmarks:
-                direction, nose_coords = get_head_direction_simple(face_landmarks.landmark)
-                mouth_x = face_landmarks.landmark[13].x
-                mouth_y = face_landmarks.landmark[13].y
-                all_mouth_centers.append((mouth_x, mouth_y))
-                if direction:
-                    nose_px = int(nose_coords[0] * FRAME_WIDTH)
-                    nose_py = int(nose_coords[1] * FRAME_HEIGHT)
-                    save_alert(img, f"HEAD_{direction}", alert_cooldowns, bbox_center=(nose_px, nose_py))
+        if not DISABLE_MEDIAPIPE:
+            if should_process_mediapipe or cached_face_results is None:
+                if img_rgb is None:
+                    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                cached_face_results = face_mesh.process(img_rgb)
+            face_results = cached_face_results
+            if face_results and face_results.multi_face_landmarks:
+                for face_landmarks in face_results.multi_face_landmarks:
+                    direction, nose_coords = get_head_direction_simple(face_landmarks.landmark)
+                    mouth_x = face_landmarks.landmark[13].x
+                    mouth_y = face_landmarks.landmark[13].y
+                    all_mouth_centers.append((mouth_x, mouth_y))
+                    if direction:
+                        nose_px = int(nose_coords[0] * FRAME_WIDTH)
+                        nose_py = int(nose_coords[1] * FRAME_HEIGHT)
+                        save_alert(img, f"HEAD_{direction}", alert_cooldowns, bbox_center=(nose_px, nose_py))
 
-        if should_process_mediapipe or cached_hand_results is None:
-            if img_rgb is None:
-                img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            cached_hand_results = hands.process(img_rgb)
-        hand_results = cached_hand_results
+            if should_process_mediapipe or cached_hand_results is None:
+                if img_rgb is None:
+                    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                cached_hand_results = hands.process(img_rgb)
+            hand_results = cached_hand_results
+
         current_hand_positions = {}
-        if hand_results.multi_hand_landmarks:
+        if hand_results and hand_results.multi_hand_landmarks:
             for i, hand_landmarks in enumerate(hand_results.multi_hand_landmarks):
                 wrist = hand_landmarks.landmark[0]
                 index_tip = hand_landmarks.landmark[8]
@@ -556,50 +800,87 @@ def run_system():
         enhanced_img = enhance_frame_clahe(img)
 
         if should_process_yolo or cached_results is None:
-            try:
-                if use_tracking:
-                    results = model.track(enhanced_img, persist=True, conf=PHONE_SEARCH_CONF, iou=0.45, imgsz=YOLO_IMAGE_SIZE, verbose=False, half=infer_half)
-                else:
-                    results = model.predict(enhanced_img, conf=PHONE_SEARCH_CONF, iou=0.45, imgsz=YOLO_IMAGE_SIZE, verbose=False, half=infer_half)
-                directml_runtime_errors = 0
-            except RuntimeError as exc:
-                error_text = str(exc)
-                if "Cannot set version_counter for inference tensor" in error_text:
-                    emit("Detected inference tensor compatibility error. Switching to prediction-only mode...")
-                    use_tracking = False
-                    results = model.predict(enhanced_img, conf=PHONE_SEARCH_CONF, iou=0.45, imgsz=YOLO_IMAGE_SIZE, verbose=False, half=infer_half)
-                    directml_runtime_errors = 0
-                elif "The parameter is incorrect" in error_text and backend == "DirectML" and not using_cpu_fallback:
-                    directml_runtime_errors += 1
-                    emit(
-                        "Detected DirectML runtime compatibility error. "
-                        f"Retrying on DirectML ({directml_runtime_errors}/{DIRECTML_ERROR_BEFORE_CPU_FALLBACK})..."
+            if use_onnx_runtime:
+                try:
+                    results = run_onnx_inference(
+                        onnx_session,
+                        onnx_input_name,
+                        onnx_output_names,
+                        enhanced_img,
+                        YOLO_IMAGE_SIZE,
+                        PHONE_SEARCH_CONF,
+                        0.45,
                     )
-                    use_tracking = False
-                    model.predictor = None
-                    try:
-                        results = model.predict(enhanced_img, conf=PHONE_SEARCH_CONF, iou=0.45, imgsz=YOLO_IMAGE_SIZE, verbose=False, half=False)
+                    directml_runtime_errors = 0
+                except Exception as exc:
+                    emit(f"ONNX inference error: {exc}")
+                    continue
+            else:
+                try:
+                    if use_tracking:
+                        results = model.track(enhanced_img, persist=True, conf=PHONE_SEARCH_CONF, iou=0.45, imgsz=YOLO_IMAGE_SIZE, verbose=False, half=infer_half)
+                    else:
+                        results = model.predict(enhanced_img, conf=PHONE_SEARCH_CONF, iou=0.45, imgsz=YOLO_IMAGE_SIZE, verbose=False, half=infer_half)
+                    directml_runtime_errors = 0
+                except RuntimeError as exc:
+                    error_text = str(exc)
+                    if "Cannot set version_counter for inference tensor" in error_text:
+                        emit("Detected inference tensor compatibility error. Switching to prediction-only mode...")
+                        use_tracking = False
+                        results = model.predict(enhanced_img, conf=PHONE_SEARCH_CONF, iou=0.45, imgsz=YOLO_IMAGE_SIZE, verbose=False, half=infer_half)
                         directml_runtime_errors = 0
-                    except RuntimeError:
-                        if directml_runtime_errors >= DIRECTML_ERROR_BEFORE_CPU_FALLBACK:
-                            emit("DirectML failed repeatedly. Switching YOLO inference to CPU fallback...")
-                            device = "cpu"
-                            backend = "CPU"
-                            using_cpu_fallback = True
-                            model.to(device)
-                            model.predictor = None
-                            infer_half = False
+                    elif "The parameter is incorrect" in error_text and backend == "DirectML" and not using_cpu_fallback:
+                        directml_runtime_errors += 1
+                        emit(
+                            "Detected DirectML runtime compatibility error. "
+                            f"Retrying on DirectML ({directml_runtime_errors}/{DIRECTML_ERROR_BEFORE_CPU_FALLBACK})..."
+                        )
+                        use_tracking = False
+                        model.predictor = None
+                        try:
                             results = model.predict(enhanced_img, conf=PHONE_SEARCH_CONF, iou=0.45, imgsz=YOLO_IMAGE_SIZE, verbose=False, half=False)
-                        else:
-                            continue
-                else:
-                    raise
+                            directml_runtime_errors = 0
+                        except RuntimeError:
+                            if directml_runtime_errors >= DIRECTML_ERROR_BEFORE_CPU_FALLBACK:
+                                emit("DirectML failed repeatedly. Switching YOLO inference to CPU fallback...")
+                                device = "cpu"
+                                backend = "CPU"
+                                using_cpu_fallback = True
+                                model.to(device)
+                                model.predictor = None
+                                infer_half = False
+                                results = model.predict(enhanced_img, conf=PHONE_SEARCH_CONF, iou=0.45, imgsz=YOLO_IMAGE_SIZE, verbose=False, half=False)
+                            else:
+                                continue
+                    else:
+                        raise
             cached_results = results
         else:
             results = cached_results
+
         all_boxes, phone_candidates, person_boxes = [], [], []
         frame_area = img.shape[0] * img.shape[1]
-        if results[0].boxes:
+        if use_onnx_runtime:
+            detections = results or []
+            for (x1, y1, x2, y2, raw_name, conf, track_id) in detections:
+                name_lower = raw_name.lower()
+
+                min_conf = CLASS_MIN_CONF.get(name_lower, GENERAL_DISPLAY_CONF)
+                if conf < min_conf:
+                    continue
+
+                box_area = (x2 - x1) * (y2 - y1)
+                if frame_area > 0 and (box_area / frame_area) > MAX_BOX_FRAME_FRACTION:
+                    continue
+                if frame_area > 0 and (box_area / frame_area) < MIN_BOX_FRAME_FRACTION:
+                    continue
+
+                all_boxes.append((x1, y1, x2, y2, raw_name, conf))
+                if 'person' in name_lower:
+                    person_boxes.append((x1, y1, x2, y2))
+                if 'phone' in name_lower or 'mobile' in name_lower:
+                    phone_candidates.append((x1, y1, x2, y2, conf, track_id))
+        elif results[0].boxes:
             for box in results[0].boxes:
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
                 cls_id = int(box.cls[0])
@@ -629,7 +910,7 @@ def run_system():
                     phone_candidates.append((x1, y1, x2, y2, conf, track_id))
 
         # --- Tiled inference for small/distant objects ---
-        if ENABLE_TILED_INFERENCE and should_process_yolo and (frame_index % (YOLO_PROCESS_EVERY_N_FRAMES * TILED_INFERENCE_EVERY_N) == 0):
+        if (not use_onnx_runtime) and ENABLE_TILED_INFERENCE and should_process_yolo and (frame_index % (YOLO_PROCESS_EVERY_N_FRAMES * TILED_INFERENCE_EVERY_N) == 0):
             tile_detections = run_tiled_inference(
                 model, enhanced_img, conf=PHONE_SEARCH_CONF, iou=0.45,
                 imgsz=YOLO_IMAGE_SIZE, half=infer_half, use_tracking=False
@@ -759,7 +1040,8 @@ def run_system():
                     del phone_persistence_map[pid]
         
         # Draw face landmarks and head direction
-        if face_results.multi_face_landmarks:
+        if face_results and face_results.multi_face_landmarks:
+            for face_landmarks in face_results.multi_face_landmarks:
                 direction, nose_coords = get_head_direction_simple(face_landmarks.landmark)
                 if direction:
                     nose_x, nose_y = int(nose_coords[0] * FRAME_WIDTH), int(nose_coords[1] * FRAME_HEIGHT)

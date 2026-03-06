@@ -15,6 +15,75 @@ SOCKET_STREAM_TARGET_FPS = max(1, int(os.environ.get('SOCKET_STREAM_TARGET_FPS',
 SOCKET_EMIT_EVERY_N = max(1, int(os.environ.get('SOCKET_EMIT_EVERY_N', '1')))
 
 MONITOR_QUALITY_PRESETS = {
+    'onnx_directml': {
+        'MONITOR_FRAME_WIDTH': '854',
+        'MONITOR_FRAME_HEIGHT': '480',
+        'YOLO_IMAGE_SIZE': '512',
+        'YOLO_PROCESS_EVERY': '4',
+        'MEDIAPIPE_PROCESS_EVERY': '10',
+        'MEDIAPIPE_REFINE_LANDMARKS': '0',
+        'ENABLE_CLAHE': '0',
+        'STREAM_WIDTH': '320',
+        'STREAM_HEIGHT': '180',
+        'STREAM_JPEG_QUALITY': '32',
+        'STREAM_TARGET_FPS': '11',
+        'SOCKET_STREAM_TARGET_FPS': '10',
+        'CAMERA_READ_LATEST': '1',
+        'CAMERA_BUFFER_FLUSH': '3',
+        'SKIP_CAMERA_PROBE': '1',
+        'CAMERA_WARMUP_FRAMES': '2',
+        'CAMERA_WARMUP_DELAY_SEC': '0.02',
+        'POST_CAMERA_INIT_DELAY_SEC': '0.2',
+        'ENABLE_TILED_INFERENCE': '0',
+        'FORCE_PREDICT_ONLY': '1',
+        'USE_ONNX_RUNTIME_DML': '1',
+    },
+    'yolo_only': {
+        'MONITOR_FRAME_WIDTH': '854',
+        'MONITOR_FRAME_HEIGHT': '480',
+        'YOLO_IMAGE_SIZE': '512',
+        'YOLO_PROCESS_EVERY': '4',
+        'MEDIAPIPE_PROCESS_EVERY': '99',
+        'DISABLE_MEDIAPIPE': '1',
+        'ENABLE_CLAHE': '0',
+        'STREAM_WIDTH': '320',
+        'STREAM_HEIGHT': '180',
+        'STREAM_JPEG_QUALITY': '32',
+        'STREAM_TARGET_FPS': '11',
+        'SOCKET_STREAM_TARGET_FPS': '10',
+        'CAMERA_READ_LATEST': '1',
+        'CAMERA_BUFFER_FLUSH': '3',
+        'SKIP_CAMERA_PROBE': '1',
+        'CAMERA_WARMUP_FRAMES': '2',
+        'CAMERA_WARMUP_DELAY_SEC': '0.02',
+        'POST_CAMERA_INIT_DELAY_SEC': '0.2',
+        'ENABLE_TILED_INFERENCE': '0',
+        'FORCE_PREDICT_ONLY': '1',
+        'USE_ONNX_RUNTIME_DML': '1',
+    },
+    'ultra_low_latency': {
+        'MONITOR_FRAME_WIDTH': '854',
+        'MONITOR_FRAME_HEIGHT': '480',
+        'YOLO_IMAGE_SIZE': '480',
+        'YOLO_PROCESS_EVERY': '5',
+        'MEDIAPIPE_PROCESS_EVERY': '12',
+        'MEDIAPIPE_REFINE_LANDMARKS': '0',
+        'ENABLE_CLAHE': '0',
+        'STREAM_WIDTH': '320',
+        'STREAM_HEIGHT': '180',
+        'STREAM_JPEG_QUALITY': '30',
+        'STREAM_TARGET_FPS': '9',
+        'SOCKET_STREAM_TARGET_FPS': '8',
+        'CAMERA_READ_LATEST': '1',
+        'CAMERA_BUFFER_FLUSH': '3',
+        'SKIP_CAMERA_PROBE': '1',
+        'CAMERA_WARMUP_FRAMES': '2',
+        'CAMERA_WARMUP_DELAY_SEC': '0.02',
+        'POST_CAMERA_INIT_DELAY_SEC': '0.2',
+        'ENABLE_TILED_INFERENCE': '0',
+        'FORCE_PREDICT_ONLY': '1',
+        'USE_ONNX_RUNTIME_DML': '1',
+    },
     'low_latency': {
         'YOLO_IMAGE_SIZE': '640',
         'YOLO_PROCESS_EVERY': '3',
@@ -43,6 +112,29 @@ MONITOR_QUALITY_PRESETS = {
         'CAMERA_BUFFER_FLUSH': '2',
         'ENABLE_TILED_INFERENCE': '1',
         'TILED_INFERENCE_EVERY': '4',
+    },
+    'amd_optimized': {
+        'MONITOR_FRAME_WIDTH': '854',
+        'MONITOR_FRAME_HEIGHT': '480',
+        'YOLO_IMAGE_SIZE': '512',
+        'YOLO_PROCESS_EVERY': '4',
+        'MEDIAPIPE_PROCESS_EVERY': '10',
+        'MEDIAPIPE_REFINE_LANDMARKS': '0',
+        'ENABLE_CLAHE': '0',
+        'STREAM_WIDTH': '320',
+        'STREAM_HEIGHT': '180',
+        'STREAM_JPEG_QUALITY': '32',
+        'STREAM_TARGET_FPS': '11',
+        'SOCKET_STREAM_TARGET_FPS': '10',
+        'CAMERA_READ_LATEST': '1',
+        'CAMERA_BUFFER_FLUSH': '3',
+        'SKIP_CAMERA_PROBE': '1',
+        'CAMERA_WARMUP_FRAMES': '2',
+        'CAMERA_WARMUP_DELAY_SEC': '0.02',
+        'POST_CAMERA_INIT_DELAY_SEC': '0.2',
+        'ENABLE_TILED_INFERENCE': '0',
+        'FORCE_PREDICT_ONLY': '1',
+        'USE_ONNX_RUNTIME_DML': '1',
     },
     'high_accuracy': {
         'MONITOR_FRAME_WIDTH': '1920',
@@ -73,6 +165,53 @@ monitoring_active = False
 HEAD_TURN_WINDOW_SECONDS = 60
 HEAD_TURN_ESCALATION_THRESHOLD = 3
 student_head_turn_tracker = {}   # { student_key: [timestamp, ...] }
+
+# Keep email dispatch non-blocking and rate-limited so stdout reader does not stall.
+EMAIL_ALERT_COOLDOWN_SECONDS = 20
+last_email_sent_at = {}
+
+
+def _send_alert_email_async(app_obj, exam_session_id, reason, timestamp, filename, student_name, roll_number, seat_number, head_turn_escalated, head_turn_count, window_seconds):
+    """Send alert email in a background thread to avoid blocking frame stream I/O."""
+    try:
+        with app_obj.app_context():
+            now_ts = time.time()
+            email_key = f"{exam_session_id}:{reason}:{student_name or ''}:{roll_number or ''}:{seat_number or ''}"
+            last_sent = last_email_sent_at.get(email_key, 0)
+            if now_ts - last_sent < EMAIL_ALERT_COOLDOWN_SECONDS:
+                return
+
+            session_model = app_obj.exam_session_model
+            user_model = app_obj.user_model
+
+            session = session_model.find_by_id(exam_session_id) if exam_session_id else None
+            teacher_email = None
+            if session and 'teacher_id' in session:
+                teacher = user_model.find_by_id(session['teacher_id'])
+                if teacher and 'email' in teacher:
+                    teacher_email = teacher['email']
+
+            if not teacher_email:
+                return
+
+            from app.utils.helpers import send_email_alert
+            email_body = f"Level 2 Warning: {reason} detected at {timestamp}."
+            if head_turn_escalated and student_name:
+                email_body = (
+                    f"Level 2 Warning: {student_name} (Roll: {roll_number}, Seat: {seat_number}) "
+                    f"has turned their head {head_turn_count} times in the last {window_seconds} seconds."
+                )
+            if filename:
+                email_body += f" See evidence: {filename}"
+
+            send_email_alert(
+                subject=f"Exam Alert: {reason}{' - ' + student_name if student_name else ''}",
+                body=email_body,
+                to_emails=[teacher_email]
+            )
+            last_email_sent_at[email_key] = now_ts
+    except Exception as e:
+        print(f"[DEBUG] Async email send failed: {e}")
 
 
 @socketio.on('connect', namespace='/')
@@ -418,37 +557,23 @@ def process_monitor_output(process, socketio_instance, app):
                             # Send email for object detection only
                             if send_email:
                                 try:
-                                    print(f"[DEBUG] Level 2 alert: exam_session_id = {exam_session_id}")
-                                    session_model = app.exam_session_model
-                                    user_model = app.user_model
-                                    session = session_model.find_by_id(exam_session_id) if exam_session_id else None
-                                    print(f"[DEBUG] Session lookup result: {session}")
-                                    teacher_email = None
-                                    if session and 'teacher_id' in session:
-                                        print(f"[DEBUG] Found teacher_id: {session['teacher_id']}")
-                                        teacher = user_model.find_by_id(session['teacher_id'])
-                                        print(f"[DEBUG] Teacher lookup result: {teacher}")
-                                        if teacher and 'email' in teacher:
-                                            teacher_email = teacher['email']
-                                    if teacher_email:
-                                        print(f"[DEBUG] Sending email to {teacher_email} for Level 2 warning: {reason}")
-                                        from app.utils.helpers import send_email_alert
-                                        email_body = f"Level 2 Warning: {reason} detected at {timestamp}."
-                                        if head_turn_escalated and student_name:
-                                            email_body = (
-                                                f"Level 2 Warning: {student_name} (Roll: {roll_number}, Seat: {seat_number}) "
-                                                f"has turned their head {head_turn_count} times in the last {HEAD_TURN_WINDOW_SECONDS} seconds."
-                                            )
-                                        if filename:
-                                            email_body += f" See evidence: {filename}"
-                                        send_email_alert(
-                                            subject=f"Exam Alert: {reason}{' — ' + student_name if student_name else ''}",
-                                            body=email_body,
-                                            to_emails=[teacher_email]
-                                        )
-                                        print(f"[DEBUG] Email sent to {teacher_email} for Level 2 warning: {reason}")
-                                    else:
-                                        print(f"[DEBUG] No teacher email found for session {exam_session_id}. Email not sent.")
+                                    threading.Thread(
+                                        target=_send_alert_email_async,
+                                        args=(
+                                            app,
+                                            exam_session_id,
+                                            reason,
+                                            timestamp,
+                                            filename,
+                                            student_name,
+                                            roll_number,
+                                            seat_number,
+                                            head_turn_escalated,
+                                            head_turn_count,
+                                            HEAD_TURN_WINDOW_SECONDS,
+                                        ),
+                                        daemon=True,
+                                    ).start()
                                 except Exception as e:
                                     print(f"[DEBUG] Error sending email for Level 2 warning: {e}")
                         except Exception as e:
@@ -500,7 +625,7 @@ def start_monitoring():
             return jsonify({'error': 'session_id is required'}), 400
         if quality_preset not in MONITOR_QUALITY_PRESETS:
             return jsonify({
-                'error': 'Invalid quality_preset. Use low_latency, balanced, or high_accuracy.'
+                'error': 'Invalid quality_preset. Use onnx_directml, yolo_only, ultra_low_latency, low_latency, balanced, amd_optimized, or high_accuracy.'
             }), 400
 
         session = session_model.find_by_id(session_id)

@@ -15,9 +15,24 @@ function TeacherSessions() {
   const [error, setError] = useState('');
   const [startingSessionId, setStartingSessionId] = useState(null);
   const [stoppingSessionId, setStoppingSessionId] = useState(null);
-  const [qualityPreset, setQualityPreset] = useState('balanced');
+  const [qualityPreset, setQualityPreset] = useState('amd_optimized');
 
   const qualityOptions = [
+    {
+      value: 'onnx_directml',
+      label: 'ONNX DirectML',
+      helper: 'Uses ONNX Runtime with DirectML provider for AMD GPU inference'
+    },
+    {
+      value: 'yolo_only',
+      label: 'YOLO Only (No MediaPipe)',
+      helper: 'Disables MediaPipe head/hand analysis to minimize freezes during live feed'
+    },
+    {
+      value: 'ultra_low_latency',
+      label: 'Ultra Low Latency',
+      helper: 'Smoothest feed, lowest detection detail (best when lag is severe)'
+    },
     {
       value: 'low_latency',
       label: 'Low Latency',
@@ -27,6 +42,11 @@ function TeacherSessions() {
       value: 'balanced',
       label: 'Balanced',
       helper: 'Recommended default for most classrooms'
+    },
+    {
+      value: 'amd_optimized',
+      label: 'AMD Optimized',
+      helper: 'Optimized for AMD/DirectML laptops with smoother feed and stable inference'
     },
     {
       value: 'high_accuracy',

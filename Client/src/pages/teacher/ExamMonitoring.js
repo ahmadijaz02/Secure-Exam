@@ -275,8 +275,8 @@ const ExamMonitoring = () => {
           </div>
         </Card>
 
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
-          <Card className="min-w-0 overflow-hidden">
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 items-start">
+          <Card className="min-w-0 overflow-hidden xl:col-span-2">
             <div className="p-4 sm:p-6">
               <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">Live Video Feed</h2>
               {isMonitoring && (
@@ -287,7 +287,7 @@ const ExamMonitoring = () => {
                   {lastFrameAt ? ` • Last: ${lastFrameAt.toLocaleTimeString()}` : ''}
                 </p>
               )}
-              <div className="relative w-full max-w-full bg-black rounded-lg overflow-hidden aspect-video flex items-center justify-center min-h-[220px] sm:min-h-[280px]">
+              <div className="relative w-full max-w-full bg-black rounded-lg overflow-hidden aspect-video flex items-center justify-center min-h-[300px] sm:min-h-[380px] lg:min-h-[460px]">
                 {hasFrame ? (
                   <>
                     <img
