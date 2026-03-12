@@ -3,6 +3,7 @@ import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-d
 import { AuthProvider } from './context/auth/AuthContext';
 import { ThemeProvider } from './context/theme/ThemeContext';
 import { NotificationProvider } from './context/notification/NotificationContext';
+import NotificationContainer from './components/notifications/NotificationContainer';
 
 // Layout Components
 import AuthLayout from './layouts/AuthLayout';
@@ -21,6 +22,8 @@ import AdminExamSessions from './pages/admin/AdminExamSessions';
 import AdminSeatingPlans from './pages/admin/AdminSeatingPlans';
 import AdminUsers from './pages/admin/AdminUsers';
 import AdminReports from './pages/admin/AdminReports';
+import ProfilePage from './pages/account/ProfilePage';
+import SettingsPage from './pages/account/SettingsPage';
 
 // Teacher Pages
 import TeacherDashboard from './pages/teacher/TeacherDashboard';
@@ -38,6 +41,7 @@ function App() {
       <NotificationProvider>
         <AuthProvider>
           <Router>
+            <NotificationContainer />
             <Routes>
               {/* Public Routes */}
               <Route path="/" element={<HomePage />} />
@@ -77,14 +81,14 @@ function App() {
                   <AdminLayout><AdminReports /></AdminLayout>
                 </AdminRoute>
               } />
+              <Route path="/admin/profile" element={
+                <AdminRoute>
+                  <AdminLayout><ProfilePage /></AdminLayout>
+                </AdminRoute>
+              } />
               <Route path="/admin/settings" element={
                 <AdminRoute>
-                  <AdminLayout>
-                    <div className="space-y-6">
-                      <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Settings</h1>
-                      <p className="text-gray-600 dark:text-gray-400">Configure system settings</p>
-                    </div>
-                  </AdminLayout>
+                  <AdminLayout><SettingsPage /></AdminLayout>
                 </AdminRoute>
               } />
 
@@ -116,22 +120,12 @@ function App() {
               } />
               <Route path="/teacher/profile" element={
                 <TeacherRoute>
-                  <TeacherLayout>
-                    <div className="space-y-6">
-                      <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Profile</h1>
-                      <p className="text-gray-600 dark:text-gray-400">Manage your profile settings</p>
-                    </div>
-                  </TeacherLayout>
+                  <TeacherLayout><ProfilePage /></TeacherLayout>
                 </TeacherRoute>
               } />
               <Route path="/teacher/settings" element={
                 <TeacherRoute>
-                  <TeacherLayout>
-                    <div className="space-y-6">
-                      <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Settings</h1>
-                      <p className="text-gray-600 dark:text-gray-400">Configure your preferences and account settings</p>
-                    </div>
-                  </TeacherLayout>
+                  <TeacherLayout><SettingsPage /></TeacherLayout>
                 </TeacherRoute>
               } />
 

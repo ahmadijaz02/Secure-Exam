@@ -9,8 +9,7 @@ from config import config
 # Initialize extensions
 jwt = JWTManager()
 bcrypt = Bcrypt()
-# threading mode so emit() from subprocess reader thread reaches clients reliably
-socketio = SocketIO(app=None, cors_allowed_origins="*", max_http_buffer_size=10_000_000, async_mode="threading")
+socketio = SocketIO(app=None, cors_allowed_origins="*", max_http_buffer_size=10_000_000, async_mode="eventlet")
 
 def create_app(config_name='default'):
     app = Flask(__name__)

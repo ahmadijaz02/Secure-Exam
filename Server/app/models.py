@@ -78,6 +78,35 @@ class User(MongoModel):
             return result.modified_count > 0
         except:
             return False
+
+    def update_profile(self, user_id, name, email):
+        """Update profile fields for the current user and return the updated document."""
+        try:
+            self.collection.update_one(
+                {'_id': ObjectId(user_id)},
+                {'$set': {
+                    'name': name,
+                    'email': email.lower(),
+                    'updated_at': datetime.utcnow()
+                }}
+            )
+            return self.find_by_id(user_id)
+        except:
+            return None
+
+    def change_password(self, user_id, new_password):
+        """Change the user's password and return whether the operation succeeded."""
+        try:
+            result = self.collection.update_one(
+                {'_id': ObjectId(user_id)},
+                {'$set': {
+                    'password_hash': self.set_password(new_password),
+                    'updated_at': datetime.utcnow()
+                }}
+            )
+            return result.matched_count > 0
+        except:
+            return False
     
     def delete_user(self, user_id):
         """Delete a user"""

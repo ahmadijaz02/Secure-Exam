@@ -84,6 +84,26 @@ class AuthService {
     }
   }
 
+  async updateProfile(profileData) {
+    try {
+      const response = await apiService.put(API_ENDPOINTS.AUTH.ME, profileData);
+      if (response.user) {
+        localStorage.setItem('user_data', JSON.stringify(response.user));
+      }
+      return response;
+    } catch (error) {
+      throw error;
+    }
+  }
+
+  async changePassword(passwordData) {
+    try {
+      return await apiService.post(API_ENDPOINTS.AUTH.CHANGE_PASSWORD, passwordData);
+    } catch (error) {
+      throw error;
+    }
+  }
+
   isAuthenticated() {
     const token = localStorage.getItem('access_token');
     return !!token;

@@ -2,7 +2,6 @@ import React from 'react';
 import { Outlet, Navigate } from 'react-router-dom';
 import { useAuth } from '../context/auth/AuthContext';
 import LoadingSpinner from '../components/ui/LoadingSpinner';
-import NotificationContainer from '../components/notifications/NotificationContainer';
 
 function AuthLayout() {
   const { isAuthenticated, isLoading } = useAuth();
@@ -57,9 +56,6 @@ function AuthLayout() {
           </div>
         </div>
       </div>
-
-      {/* Notification container */}
-      <NotificationContainer />
     </div>
   );
 }
