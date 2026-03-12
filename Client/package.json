@@ -3,13 +3,22 @@
   "version": "0.1.0",
   "private": true,
   "dependencies": {
+<<<<<<< HEAD
     "axios": "^1.10.0",
     "date-fns": "^2.29.3",
+=======
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-router-dom": "^6.8.1",
     "react-scripts": "5.0.1",
+<<<<<<< HEAD
     "socket.io-client": "^4.5.4",
+=======
+    "axios": "^1.10.0",
+    "socket.io-client": "^4.5.4",
+    "date-fns": "^2.29.3",
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
     "web-vitals": "^2.1.4"
   },
   "scripts": {
@@ -36,10 +45,13 @@
       "last 1 firefox version",
       "last 1 safari version"
     ]
+<<<<<<< HEAD
   },
   "devDependencies": {
     "autoprefixer": "^10.4.27",
     "postcss": "^8.5.8",
     "tailwindcss": "^3.4.19"
+=======
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
   }
 }

@@ -931,6 +931,7 @@ def get_session_seating_plans(session_id):
         # Get seating plans linked to this session
         linked_plans = seating_plan_model.find_by_session(session_id)
         current_app.logger.info(f"Linked plans for session {session_id}: {len(linked_plans)}")
+<<<<<<< HEAD
 
         # Build quick lookup for session names to annotate plans assigned elsewhere
         session_lookup = {}
@@ -939,12 +940,15 @@ def get_session_seating_plans(session_id):
             session_lookup = {s.get('id'): s.get('name') for s in all_sessions if s.get('id')}
         except Exception:
             session_lookup = {}
+=======
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
         
         # Get all unlinked seating plans (no exam_session_id or different session)
         all_plans = seating_plan_model.find_all()
         current_app.logger.info(f"Total plans in database: {len(all_plans)}")
         
         unlinked_plans = [p for p in all_plans if p.get('exam_session_id') != session_id]
+<<<<<<< HEAD
 
         # Add metadata so frontend can disable plans that belong to another session
         for plan in unlinked_plans:
@@ -953,6 +957,8 @@ def get_session_seating_plans(session_id):
             plan['is_assigned_elsewhere'] = is_assigned_elsewhere
             if is_assigned_elsewhere:
                 plan['assigned_session_name'] = session_lookup.get(linked_session_id, 'Another Exam Session')
+=======
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
         current_app.logger.info(f"Unlinked plans: {len(unlinked_plans)}")
         
         for plan in unlinked_plans:
@@ -1155,6 +1161,7 @@ def link_seating_plan_to_session(session_id, plan_id):
         plan = seating_plan_model.find_by_id(plan_id)
         if not plan:
             return jsonify({'message': 'Seating plan not found'}), 404
+<<<<<<< HEAD
 
         # Prevent stealing a plan from another session.
         linked_session_id = plan.get('exam_session_id')
@@ -1164,6 +1171,8 @@ def link_seating_plan_to_session(session_id, plan_id):
             return jsonify({
                 'message': f'Seating plan is already assigned to {linked_session_name}. Unlink it there first.'
             }), 409
+=======
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
         
         # ENFORCE: Only ONE seating plan per session
         # First, unlink any existing plans from this session

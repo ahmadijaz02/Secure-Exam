@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 import React, { createContext, useContext, useReducer, useCallback, useMemo } from 'react';
+=======
+import React, { createContext, useContext, useReducer } from 'react';
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
 
 // Initial state
 const initialState = {
@@ -37,15 +41,21 @@ function notificationReducer(state, action) {
   }
 }
 
+<<<<<<< HEAD
 // Create contexts
 const NotificationContext = createContext();
 const NotificationStateContext = createContext();
 const NotificationActionsContext = createContext();
+=======
+// Create context
+const NotificationContext = createContext();
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
 
 // Provider component
 export function NotificationProvider({ children }) {
   const [state, dispatch] = useReducer(notificationReducer, initialState);
 
+<<<<<<< HEAD
   const removeNotification = useCallback((id) => {
     dispatch({
       type: NOTIFICATION_ACTIONS.REMOVE_NOTIFICATION,
@@ -54,6 +64,9 @@ export function NotificationProvider({ children }) {
   }, []);
 
   const addNotification = useCallback((notification) => {
+=======
+  const addNotification = (notification) => {
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
     const id = Date.now() + Math.random();
     const newNotification = {
       id,
@@ -75,6 +88,7 @@ export function NotificationProvider({ children }) {
     }
 
     return id;
+<<<<<<< HEAD
   }, [removeNotification]);
 
   const clearNotifications = useCallback(() => {
@@ -83,36 +97,72 @@ export function NotificationProvider({ children }) {
 
   // Convenience methods for different notification types
   const showSuccess = useCallback((message, options = {}) => {
+=======
+  };
+
+  const removeNotification = (id) => {
+    dispatch({
+      type: NOTIFICATION_ACTIONS.REMOVE_NOTIFICATION,
+      payload: { id },
+    });
+  };
+
+  const clearNotifications = () => {
+    dispatch({ type: NOTIFICATION_ACTIONS.CLEAR_NOTIFICATIONS });
+  };
+
+  // Convenience methods for different notification types
+  const showSuccess = (message, options = {}) => {
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
     return addNotification({
       type: 'success',
       message,
       ...options,
     });
+<<<<<<< HEAD
   }, [addNotification]);
 
   const showError = useCallback((message, options = {}) => {
+=======
+  };
+
+  const showError = (message, options = {}) => {
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
     return addNotification({
       type: 'error',
       message,
       duration: 7000, // Longer duration for errors
       ...options,
     });
+<<<<<<< HEAD
   }, [addNotification]);
 
   const showWarning = useCallback((message, options = {}) => {
+=======
+  };
+
+  const showWarning = (message, options = {}) => {
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
     return addNotification({
       type: 'warning',
       message,
       ...options,
     });
+<<<<<<< HEAD
   }, [addNotification]);
 
   const showInfo = useCallback((message, options = {}) => {
+=======
+  };
+
+  const showInfo = (message, options = {}) => {
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
     return addNotification({
       type: 'info',
       message,
       ...options,
     });
+<<<<<<< HEAD
   }, [addNotification]);
 
   const stateValue = useMemo(() => ({
@@ -120,6 +170,12 @@ export function NotificationProvider({ children }) {
   }), [state]);
 
   const actionsValue = useMemo(() => ({
+=======
+  };
+
+  const value = {
+    ...state,
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
     addNotification,
     removeNotification,
     clearNotifications,
@@ -127,6 +183,7 @@ export function NotificationProvider({ children }) {
     showError,
     showWarning,
     showInfo,
+<<<<<<< HEAD
   }), [
     addNotification,
     removeNotification,
@@ -150,6 +207,14 @@ export function NotificationProvider({ children }) {
         </NotificationContext.Provider>
       </NotificationActionsContext.Provider>
     </NotificationStateContext.Provider>
+=======
+  };
+
+  return (
+    <NotificationContext.Provider value={value}>
+      {children}
+    </NotificationContext.Provider>
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
   );
 }
 
@@ -162,6 +227,7 @@ export function useNotification() {
   return context;
 }
 
+<<<<<<< HEAD
 // Use this in components that only need to trigger notifications
 // so they don't re-render when notifications are added/removed.
 export function useNotificationActions() {
@@ -172,4 +238,6 @@ export function useNotificationActions() {
   return context;
 }
 
+=======
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
 export default NotificationContext;

@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 import React, { useState, useEffect, useCallback } from 'react';
+=======
+import React, { useState, useEffect } from 'react';
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
 import Card from '../../components/ui/Card';
 import Button from '../../components/ui/Button';
 import Input from '../../components/ui/Input';
@@ -21,7 +25,15 @@ function AdminUsers() {
     is_active: true,
   });
 
+<<<<<<< HEAD
   const fetchUsers = useCallback(async () => {
+=======
+  useEffect(() => {
+    fetchUsers();
+  }, [filterRole]);
+
+  const fetchUsers = async () => {
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
     try {
       setLoading(true);
       const data = await adminService.getAllUsers(filterRole || null);
@@ -31,11 +43,15 @@ function AdminUsers() {
     } finally {
       setLoading(false);
     }
+<<<<<<< HEAD
   }, [filterRole, addNotification]);
 
   useEffect(() => {
     fetchUsers();
   }, [fetchUsers]);
+=======
+  };
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
 
   const handleInputChange = (e) => {
     const { name, value, type, checked } = e.target;
@@ -131,12 +147,21 @@ function AdminUsers() {
 
   return (
     <div className="space-y-6">
+<<<<<<< HEAD
       <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-center">
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">User Management</h1>
           <p className="mt-1 sm:mt-2 text-sm sm:text-base text-gray-600 dark:text-gray-400">Manage system users and their roles</p>
         </div>
         <Button variant="primary" className="w-full sm:w-auto" onClick={() => setShowModal(true)}>
+=======
+      <div className="flex justify-between items-center">
+        <div>
+          <h1 className="text-3xl font-bold text-gray-900 dark:text-white">User Management</h1>
+          <p className="mt-2 text-gray-600 dark:text-gray-400">Manage system users and their roles</p>
+        </div>
+        <Button variant="primary" onClick={() => setShowModal(true)}>
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
           + Add User
         </Button>
       </div>
@@ -144,7 +169,11 @@ function AdminUsers() {
       {/* Filters */}
       <Card>
         <Card.Content className="p-4">
+<<<<<<< HEAD
           <div className="flex flex-col gap-2 sm:flex-row sm:gap-4 sm:items-center">
+=======
+          <div className="flex gap-4 items-center">
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
             <label className="text-sm font-medium text-gray-700 dark:text-gray-300">Filter by Role:</label>
             <select
               value={filterRole}
@@ -163,6 +192,7 @@ function AdminUsers() {
         </Card.Content>
       </Card>
 
+<<<<<<< HEAD
       {/* Users - Mobile Cards */}
       <div className="block md:hidden space-y-3">
         {users.map((user) => (
@@ -205,6 +235,10 @@ function AdminUsers() {
 
       {/* Users - Desktop Table */}
       <Card className="hidden md:block">
+=======
+      {/* Users Table */}
+      <Card>
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
         <Card.Content className="p-0">
           <div className="overflow-x-auto">
             <table className="w-full">
@@ -289,8 +323,13 @@ function AdminUsers() {
 
       {/* Create/Edit Modal */}
       {showModal && (
+<<<<<<< HEAD
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
           <div className="bg-white dark:bg-gray-800 rounded-lg p-4 sm:p-6 w-full max-w-md">
+=======
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white dark:bg-gray-800 rounded-lg p-6 w-full max-w-md">
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
             <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-4">
               {editingUser ? 'Edit User' : 'Create New User'}
             </h2>

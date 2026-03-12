@@ -1,9 +1,17 @@
+<<<<<<< HEAD
 import React, { useState, useEffect, useCallback } from 'react';
+=======
+import React, { useState, useEffect } from 'react';
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
 import Card from '../../components/ui/Card';
 import Button from '../../components/ui/Button';
 import Input from '../../components/ui/Input';
 import LoadingSpinner from '../../components/ui/LoadingSpinner';
 import adminService from '../../api/services/adminService';
+<<<<<<< HEAD
+=======
+import { API_CONFIG } from '../../api/config/apiConfig';
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
 import { useNotification } from '../../context/notification/NotificationContext';
 import ImageSeatMarker from '../../components/seating/ImageSeatMarker';
 import ImageSeatViewer from '../../components/seating/ImageSeatViewer';
@@ -13,12 +21,20 @@ import {
   renderSeatingEditor,
   assignStudentToSeat,
   clearStudentFromSeat,
+<<<<<<< HEAD
+=======
+  getSeatStudentData,
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
   generateSeats as generateEmptySeats,
 } from '../../utils/seatingUtils';
 
 function AdminSeatingPlans() {
   const [seatingPlans, setSeatingPlans] = useState([]);
   const [loading, setLoading] = useState(true);
+<<<<<<< HEAD
+=======
+  const [showModal, setShowModal] = useState(false);
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
   const [editingPlan, setEditingPlan] = useState(null);
   const [showSeatingEditor, setShowSeatingEditor] = useState(false);
   const [currentPlan, setCurrentPlan] = useState(null);
@@ -46,7 +62,23 @@ function AdminSeatingPlans() {
   const [selectedPlanForMarking, setSelectedPlanForMarking] = useState(null);
   const [creatingImagePlan, setCreatingImagePlan] = useState(false);
 
+<<<<<<< HEAD
   const fetchSeatingPlans = useCallback(async () => {
+=======
+  useEffect(() => {
+    fetchSeatingPlans();
+  }, []);
+
+  const getFullImageUrl = (imagePath) => {
+    if (!imagePath) return '';
+    if (imagePath.startsWith('http')) return imagePath;
+    // Keep /api in the path for uploads route  
+    const base = API_CONFIG.BASE_URL.replace(/\/$/, '');
+    return `${base}${imagePath.startsWith('/') ? '' : '/'}${imagePath}`;
+  };
+
+  const fetchSeatingPlans = async () => {
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
     try {
       setLoading(true);
       const data = await adminService.getAllSeatingPlans();
@@ -56,11 +88,15 @@ function AdminSeatingPlans() {
     } finally {
       setLoading(false);
     }
+<<<<<<< HEAD
   }, [addNotification]);
 
   useEffect(() => {
     fetchSeatingPlans();
   }, [fetchSeatingPlans]);
+=======
+  };
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
 
   const handleInputChange = (e) => {
     const { name, value } = e.target;
@@ -148,6 +184,20 @@ function AdminSeatingPlans() {
     }
     setShowSeatingEditor(true);
   };
+<<<<<<< HEAD
+=======
+
+
+
+  const toggleSeatAvailability = (seatNum) => {
+    setSeats(prev => prev.map(seat => 
+      seat.seat_number === seatNum
+        ? { ...seat, occupied: !seat.occupied }
+        : seat
+    ));
+  };
+
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
   const handleSelectSeat = (seatNum) => {
     const seat = seats.find(s => String(s.seat_number) === String(seatNum));
     setSelectedSeatKey(seatNum);
@@ -162,6 +212,18 @@ function AdminSeatingPlans() {
     }
   };
 
+<<<<<<< HEAD
+=======
+  const handleToggleSelectedSeat = () => {
+    if (!selectedSeatKey) {
+      addNotification('error', 'Select a seat first');
+      return;
+    }
+    toggleSeatAvailability(selectedSeatKey);
+    addNotification('info', 'Seat availability toggled');
+  };
+
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
   const handleAssignSeat = () => {
     if (!selectedSeatKey) {
       addNotification('error', 'Select a seat to assign');
@@ -212,7 +274,12 @@ function AdminSeatingPlans() {
         await adminService.createSeatingPlan(planData);
         addNotification('success', 'Seating plan created successfully');
       }
+<<<<<<< HEAD
 
+=======
+      
+      setShowModal(false);
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
       setShowSeatingEditor(false);
       resetForm();
       fetchSeatingPlans();
@@ -230,6 +297,10 @@ function AdminSeatingPlans() {
     });
     setSeats(plan.seats || []);
     setShowSeatingEditor(true);
+<<<<<<< HEAD
+=======
+    setShowModal(true);
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
   };
 
   const handleView = (plan) => {
@@ -264,6 +335,14 @@ function AdminSeatingPlans() {
     setRollNumber('');
   };
 
+<<<<<<< HEAD
+=======
+  const handleCloseModal = () => {
+    setShowModal(false);
+    resetForm();
+  };
+
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
   const handleCloseViewer = () => {
     setCurrentPlan(null);
   };
@@ -280,10 +359,17 @@ function AdminSeatingPlans() {
 
   return (
     <div className="space-y-6">
+<<<<<<< HEAD
       <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-center">
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Seating Plans</h1>
           <p className="mt-1 sm:mt-2 text-sm sm:text-base text-gray-600 dark:text-gray-400">Configure classroom seating arrangements</p>
+=======
+      <div className="flex justify-between items-center">
+        <div>
+          <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Seating Plans</h1>
+          <p className="mt-2 text-gray-600 dark:text-gray-400">Configure classroom seating arrangements</p>
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
         </div>
       </div>
 
@@ -579,8 +665,13 @@ function AdminSeatingPlans() {
             ) : (
               seatingPlans.map((plan) => (
                 <div key={plan.id} className="border border-gray-200 dark:border-gray-700 rounded-lg p-3 hover:bg-gray-50 dark:hover:bg-gray-900/30 transition-colors">
+<<<<<<< HEAD
                   <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2 sm:gap-3">
                   <div className="flex-1 min-w-0">
+=======
+                  <div className="flex items-start justify-between gap-3">
+                  <div className="flex-1">
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
                       <p className="font-medium text-gray-900 dark:text-white">{plan.classroom_name}</p>
                       {plan.room_number && (
                         <p className="text-xs text-purple-600 dark:text-purple-400 mt-0.5 font-semibold">
@@ -601,7 +692,11 @@ function AdminSeatingPlans() {
                         </p>
                       )}
                     </div>
+<<<<<<< HEAD
                     <div className="flex gap-1 flex-shrink-0 flex-wrap justify-end">
+=======
+                    <div className="flex gap-1 flex-shrink-0 flex-wrap">
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
                       <Button 
                         variant="outline"
                         onClick={() => handleView(plan)}
@@ -650,8 +745,13 @@ function AdminSeatingPlans() {
 
       {/* View Modal */}
       {currentPlan && (
+<<<<<<< HEAD
         <div className="fixed inset-0 bg-black/50 flex items-start sm:items-center justify-center p-2 sm:p-4 z-50 overflow-y-auto">
           <Card className="w-full max-w-4xl max-h-[90vh] overflow-y-auto my-4">
+=======
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+          <Card className="w-full max-w-4xl max-h-[90vh] overflow-y-auto">
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
             <Card.Header className="flex items-center justify-between">
               <div className="flex items-center gap-4">
                 <div className="w-12 h-12 rounded-full bg-blue-50 dark:bg-blue-900 flex items-center justify-center text-blue-700 dark:text-blue-200 font-bold text-lg">
@@ -767,9 +867,15 @@ function AdminSeatingPlans() {
       )}
       {/* Image Seat Marker Modal */}
       {showImageMarkerModal && selectedPlanForMarking && (
+<<<<<<< HEAD
         <div className="fixed inset-0 bg-black/50 flex items-start sm:items-center justify-center p-2 sm:p-4 z-50 overflow-y-auto">
           <div className="bg-white dark:bg-gray-800 rounded-lg w-full max-w-4xl my-4 sm:my-8">
             <div className="sticky top-0 bg-white dark:bg-gray-800 border-b dark:border-gray-700 p-3 sm:p-4 flex justify-between items-center">
+=======
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50 overflow-y-auto">
+          <div className="bg-white dark:bg-gray-800 rounded-lg w-full max-w-4xl my-8">
+            <div className="sticky top-0 bg-white dark:bg-gray-800 border-b dark:border-gray-700 p-4 flex justify-between items-center">
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
               <h2 className="text-lg font-bold text-gray-900 dark:text-white">
                 {selectedPlanForMarking.image_path ? 'Edit' : 'Create'} Seating Plan: {selectedPlanForMarking.classroom_name}
               </h2>
@@ -781,7 +887,11 @@ function AdminSeatingPlans() {
               </button>
             </div>
 
+<<<<<<< HEAD
             <div className="p-3 sm:p-6 max-h-[calc(100vh-200px)] overflow-y-auto">
+=======
+            <div className="p-6 max-h-[calc(100vh-200px)] overflow-y-auto">
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
               <ImageSeatMarker
                 planId={selectedPlanForMarking.id}
                 plan={selectedPlanForMarking}

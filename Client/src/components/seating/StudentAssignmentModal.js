@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 import React, { useState, useEffect, useCallback } from 'react';
+=======
+import React, { useState, useEffect } from 'react';
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
 import Button from '../ui/Button';
 import Input from '../ui/Input';
 import LoadingSpinner from '../ui/LoadingSpinner';
@@ -16,9 +20,15 @@ function StudentAssignmentModal({ planId, plan, isOpen, onClose, onAssignmentCom
   const [loading, setLoading] = useState(false);
   const { addNotification } = useNotification();
 
+<<<<<<< HEAD
   const toSeatValue = useCallback((seat) => seat?.seat_number != null ? String(seat.seat_number) : '', []);
 
   const getSortedEmptySeatValues = useCallback((planData) => {
+=======
+  const toSeatValue = (seat) => seat?.seat_number != null ? String(seat.seat_number) : '';
+
+  const getSortedEmptySeatValues = (planData) => {
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
     if (!planData?.seats || !Array.isArray(planData.seats)) return [];
 
     const emptySeats = planData.seats
@@ -40,9 +50,15 @@ function StudentAssignmentModal({ planId, plan, isOpen, onClose, onAssignmentCom
       if (bIsNum) return 1;
       return a.localeCompare(b);
     });
+<<<<<<< HEAD
   }, [toSeatValue]);
 
   const getNextEmptySeatValue = useCallback((planData, currentSeatValue) => {
+=======
+  };
+
+  const getNextEmptySeatValue = (planData, currentSeatValue) => {
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
     const emptySeatValues = getSortedEmptySeatValues(planData);
     if (emptySeatValues.length === 0) return '';
 
@@ -53,7 +69,11 @@ function StudentAssignmentModal({ planId, plan, isOpen, onClose, onAssignmentCom
 
     const nextIndex = (currentIndex + 1) % emptySeatValues.length;
     return emptySeatValues[nextIndex];
+<<<<<<< HEAD
   }, [getSortedEmptySeatValues]);
+=======
+  };
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
 
   useEffect(() => {
     if (!isOpen) {
@@ -75,7 +95,11 @@ function StudentAssignmentModal({ planId, plan, isOpen, onClose, onAssignmentCom
         seat_number: firstEmptySeat
       };
     });
+<<<<<<< HEAD
   }, [isOpen, activeTab, plan, getNextEmptySeatValue]);
+=======
+  }, [isOpen, activeTab, plan]);
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
 
   const saveCurrentManualAssignment = async () => {
     const seatNumberValue = String(manualAssignment.seat_number || '').trim();
@@ -214,9 +238,15 @@ function StudentAssignmentModal({ planId, plan, isOpen, onClose, onAssignmentCom
   if (!isOpen) return null;
 
   return (
+<<<<<<< HEAD
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-start sm:items-center justify-center z-50 p-2 sm:p-4 overflow-y-auto">
       <div className="bg-white dark:bg-gray-800 rounded-lg max-w-2xl w-full max-h-[90vh] overflow-y-auto my-4">
         <div className="sticky top-0 bg-white dark:bg-gray-800 border-b dark:border-gray-700 p-4 sm:p-6 flex justify-between items-center">
+=======
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white dark:bg-gray-800 rounded-lg max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+        <div className="sticky top-0 bg-white dark:bg-gray-800 border-b dark:border-gray-700 p-6 flex justify-between items-center">
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
           <h2 className="text-xl font-bold text-gray-900 dark:text-white">Assign Students to Seats</h2>
           <button
             onClick={onClose}

@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 import React, { useState, useEffect, useCallback } from 'react';
+=======
+import React, { useState, useEffect } from 'react';
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
 import { useNavigate } from 'react-router-dom';
 import Card from '../../components/ui/Card';
 import Button from '../../components/ui/Button';
@@ -12,7 +16,15 @@ function AdminDashboard() {
   const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
 
+<<<<<<< HEAD
   const fetchDashboardStats = useCallback(async () => {
+=======
+  useEffect(() => {
+    fetchDashboardStats();
+  }, []);
+
+  const fetchDashboardStats = async () => {
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
     try {
       setLoading(true);
       const data = await adminService.getDashboardStats();
@@ -22,11 +34,15 @@ function AdminDashboard() {
     } finally {
       setLoading(false);
     }
+<<<<<<< HEAD
   }, [addNotification]);
 
   useEffect(() => {
     fetchDashboardStats();
   }, [fetchDashboardStats]);
+=======
+  };
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
 
   if (loading) {
     return (
@@ -46,12 +62,21 @@ function AdminDashboard() {
   return (
     <div className="space-y-8">
       <div>
+<<<<<<< HEAD
         <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Admin Dashboard</h1>
         <p className="mt-1 sm:mt-2 text-sm sm:text-base text-gray-600 dark:text-gray-400">Manage exam sessions, teachers, and system configuration</p>
       </div>
 
       {/* Statistics Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-6">
+=======
+        <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Admin Dashboard</h1>
+        <p className="mt-2 text-gray-600 dark:text-gray-400">Manage exam sessions, teachers, and system configuration</p>
+      </div>
+
+      {/* Statistics Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
         {dashboardStats.map((stat, index) => (
           <Card key={index}>
             <Card.Content className="p-6">
@@ -73,7 +98,11 @@ function AdminDashboard() {
           <Card.Title>Quick Actions</Card.Title>
         </Card.Header>
         <Card.Content className="p-6">
+<<<<<<< HEAD
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+=======
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
             <Button variant="primary" className="w-full" onClick={() => navigate('/admin/exam-sessions')}>
               Create Exam Session
             </Button>

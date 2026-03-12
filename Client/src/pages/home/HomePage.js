@@ -28,20 +28,35 @@ function HomePage() {
                 Secure Exam
               </span>
             </div>
+<<<<<<< HEAD
             <div className="flex items-center space-x-2 sm:space-x-4">
               {isAuthenticated ? (
                 <Button variant="primary" onClick={handleDashboardClick} className="text-sm sm:text-base">
                   Dashboard
+=======
+            <div className="flex items-center space-x-4">
+              {isAuthenticated ? (
+                <Button variant="primary" onClick={handleDashboardClick}>
+                  Go to Dashboard
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
                 </Button>
               ) : (
                 <>
                   <Link to="/auth/login">
+<<<<<<< HEAD
                     <Button variant="ghost" className="text-sm sm:text-base">
+=======
+                    <Button variant="ghost">
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
                       Sign In
                     </Button>
                   </Link>
                   <Link to="/auth/signup">
+<<<<<<< HEAD
                     <Button variant="primary" className="text-sm sm:text-base">
+=======
+                    <Button variant="primary">
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
                       Get Started
                     </Button>
                   </Link>

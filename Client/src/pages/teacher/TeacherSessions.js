@@ -120,7 +120,11 @@ function TeacherSessions() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-gray-900 dark:text-white">Active Sessions</h1>
+<<<<<<< HEAD
         <p className="text-sm sm:text-base text-gray-600 dark:text-gray-400">Start monitoring for sessions assigned to you</p>
+=======
+        <p className="text-gray-600 dark:text-gray-400">Start monitoring for sessions assigned to you</p>
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
       </div>
 
       <Card>
@@ -183,7 +187,11 @@ function TeacherSessions() {
                         <p>Status: {status}</p>
                       </div>
                     </div>
+<<<<<<< HEAD
                     <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-3">
+=======
+                    <div className="flex items-center gap-3">
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
                       {status === 'active' ? (
                         <>
                           <Button

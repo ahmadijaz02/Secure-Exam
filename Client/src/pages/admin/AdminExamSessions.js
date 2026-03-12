@@ -1,10 +1,26 @@
+<<<<<<< HEAD
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+=======
+import React, { useState, useEffect } from 'react';
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
 import Card from '../../components/ui/Card';
 import Button from '../../components/ui/Button';
 import Input from '../../components/ui/Input';
 import LoadingSpinner from '../../components/ui/LoadingSpinner';
 import adminService from '../../api/services/adminService';
+<<<<<<< HEAD
 import { useNotificationActions } from '../../context/notification/NotificationContext';
+=======
+import { useNotification } from '../../context/notification/NotificationContext';
+import {
+  renderSeatingGrid,
+  renderSeatingEditor,
+  assignStudentToSeat,
+  clearStudentFromSeat,
+  getSeatStudentData,
+  generateSeats as generateEmptySeats,
+} from '../../utils/seatingUtils';
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
 
 function AdminExamSessions() {
   const [sessions, setSessions] = useState([]);
@@ -17,8 +33,12 @@ function AdminExamSessions() {
   const [linkedSeatingPlans, setLinkedSeatingPlans] = useState([]);
   const [availableSeatingPlans, setAvailableSeatingPlans] = useState([]);
   const [seatingPlanLoading, setSeatingPlanLoading] = useState(false);
+<<<<<<< HEAD
   const planActionInFlightRef = useRef(false);
   const { showSuccess, showError } = useNotificationActions();
+=======
+  const { addNotification } = useNotification();
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
 
   const [formData, setFormData] = useState({
     name: '',
@@ -29,7 +49,38 @@ function AdminExamSessions() {
     end_time: '',
   });
 
+<<<<<<< HEAD
   const fetchData = useCallback(async () => {
+=======
+  const [seatingFormData, setSeatingFormData] = useState({
+    classroom_name: '',
+    total_seats: 5,
+  });
+
+  const [seats, setSeats] = useState([]);
+  const [selectedSeatId, setSelectedSeatId] = useState(null);
+  const [studentName, setStudentName] = useState('');
+  const [rollNumber, setRollNumber] = useState('');
+
+  useEffect(() => {
+    fetchData();
+    
+    // Add visibility change listener to refresh when tab becomes visible
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        fetchData();
+      }
+    };
+    
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
+  }, []);
+
+  const fetchData = async () => {
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
     try {
       setLoading(true);
       const [sessionsData, teachersData] = await Promise.all([
@@ -40,6 +91,7 @@ function AdminExamSessions() {
       setSessions(sessionsData.sessions);
       setTeachers(teachersData.users);
     } catch (error) {
+<<<<<<< HEAD
       showError(error.response?.data?.message || 'Failed to load data');
     } finally {
       setLoading(false);
@@ -74,6 +126,39 @@ function AdminExamSessions() {
       }
     }
   }, [showError]);
+=======
+      addNotification('error', error.response?.data?.message || 'Failed to load data');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const fetchSessionSeatingPlans = async (sessionId) => {
+    try {
+      setSeatingPlanLoading(true);
+      const data = await adminService.getSessionSeatingPlans(sessionId);
+      console.log('=== SEATING PLANS RESPONSE ===');
+      console.log('Full response:', data);
+      console.log('Linked plans:', data.linked_seating_plans);
+      console.log('Available plans:', data.available_seating_plans);
+      
+      // Handle new response structure with linked and available plans
+      const linked = Array.isArray(data.linked_seating_plans) ? data.linked_seating_plans : [];
+      const available = Array.isArray(data.available_seating_plans) ? data.available_seating_plans : [];
+      
+      console.log('After processing - Linked:', linked.length, 'Available:', available.length);
+      setLinkedSeatingPlans(linked);
+      setAvailableSeatingPlans(available);
+    } catch (error) {
+      console.error('Failed to load seating plans:', error);
+      setLinkedSeatingPlans([]);
+      setAvailableSeatingPlans([]);
+      addNotification('error', 'Failed to load seating plans');
+    } finally {
+      setSeatingPlanLoading(false);
+    }
+  };
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
 
   const handleInputChange = (e) => {
     const { name, value } = e.target;
@@ -83,6 +168,22 @@ function AdminExamSessions() {
     }));
   };
 
+<<<<<<< HEAD
+=======
+  const handleSeatingInputChange = (e) => {
+    const { name, value } = e.target;
+    setSeatingFormData(prev => ({
+      ...prev,
+      [name]: name === 'total_seats' ? parseInt(value) || 0 : value
+    }));
+  };
+
+  const generateSeats = () => {
+    const newSeats = generateEmptySeats(seatingFormData.total_seats);
+    setSeats(newSeats);
+  };
+
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
   const handleSubmit = async (e) => {
     e.preventDefault();
     
@@ -95,20 +196,101 @@ function AdminExamSessions() {
 
       if (editingSession) {
         await adminService.updateExamSession(editingSession.id, sessionData);
+<<<<<<< HEAD
         showSuccess('Exam session updated successfully');
       } else {
         await adminService.createExamSession(sessionData);
         showSuccess('Exam session created successfully');
+=======
+        addNotification('success', 'Exam session updated successfully');
+      } else {
+        await adminService.createExamSession(sessionData);
+        addNotification('success', 'Exam session created successfully');
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
       }
       
       setShowModal(false);
       resetForm();
       fetchData();
     } catch (error) {
+<<<<<<< HEAD
       showError(error.response?.data?.message || 'Operation failed');
     }
   };
 
+=======
+      addNotification('error', error.response?.data?.message || 'Operation failed');
+    }
+  };
+
+  const handleSubmitSeatingPlan = async (e) => {
+    if (e) e.preventDefault();
+    
+    try {
+      if (!seatingFormData.classroom_name.trim()) {
+        addNotification('error', 'Classroom name is required');
+        return;
+      }
+
+      const seatsToSubmit = seats.length > 0 ? seats : generateEmptySeats(seatingFormData.total_seats);
+      const planData = {
+        classroom_name: seatingFormData.classroom_name,
+        total_seats: seatingFormData.total_seats,
+        seats: seatsToSubmit,
+      };
+
+      console.log('Submitting seating plan with data:', planData);
+      console.log('Selected session:', selectedSessionForSeating);
+      
+      const response = await adminService.createSessionSeatingPlan(selectedSessionForSeating.id, planData);
+      console.log('Seating plan created:', response);
+      addNotification('success', 'Seating plan created successfully');
+      
+      resetSeatingForm();
+      setTimeout(() => fetchSessionSeatingPlans(selectedSessionForSeating.id), 500);
+      fetchData();
+    } catch (error) {
+      addNotification('error', error.response?.data?.message || 'Failed to create seating plan');
+    }
+  };
+
+  const handleSeatSelect = (seatKey) => {
+    setSelectedSeatId(seatKey);
+    const [row, col] = seatKey.split('-').map(Number);
+    const studentData = getSeatStudentData(seats, row, col);
+    setStudentName(studentData.student_name || '');
+    setRollNumber(studentData.roll_number || '');
+  };
+
+  const handleAssignSeat = () => {
+    if (!selectedSeatId) {
+      addNotification('error', 'Select a seat to assign');
+      return;
+    }
+    if (!studentName.trim() || !rollNumber.trim()) {
+      addNotification('error', 'Student name and roll number are required');
+      return;
+    }
+
+    const updatedSeats = assignStudentToSeat(seats, selectedSeatId, studentName, rollNumber);
+    setSeats(updatedSeats);
+    addNotification('success', 'Student assigned successfully');
+  };
+
+  const handleClearSeat = () => {
+    if (!selectedSeatId) {
+      addNotification('error', 'Select a seat to clear');
+      return;
+    }
+
+    const updatedSeats = clearStudentFromSeat(seats, selectedSeatId);
+    setSeats(updatedSeats);
+    setStudentName('');
+    setRollNumber('');
+    addNotification('success', 'Seat cleared successfully');
+  };
+
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
   const handleEdit = (session) => {
     setEditingSession(session);
     
@@ -141,6 +323,7 @@ function AdminExamSessions() {
   };
 
   const handleLinkSeatingPlan = async (planId) => {
+<<<<<<< HEAD
     if (planActionInFlightRef.current) return;
 
     const selectedPlan = availableSeatingPlans.find((p) => p.id === planId);
@@ -156,6 +339,9 @@ function AdminExamSessions() {
 
     try {
       planActionInFlightRef.current = true;
+=======
+    try {
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
       // Check if there's already a linked plan - only allow ONE
       if (linkedSeatingPlans.length > 0) {
         // Silently unlink the existing plan first
@@ -164,6 +350,7 @@ function AdminExamSessions() {
       }
 
       await adminService.linkSeatingPlanToSession(selectedSessionForSeating.id, planId);
+<<<<<<< HEAD
       showSuccess('Seating plan linked successfully');
 
       // Refresh lists once without toggling modal-level spinner (prevents visible blink)
@@ -172,17 +359,60 @@ function AdminExamSessions() {
       showError(error.response?.data?.message || 'Failed to link seating plan');
     } finally {
       planActionInFlightRef.current = false;
+=======
+      addNotification('success', 'Seating plan linked successfully');
+      
+      // Update local state immediately
+      const planToLink = availableSeatingPlans.find(p => p.id === planId);
+      if (planToLink) {
+        // Move any existing linked plans back to available
+        if (linkedSeatingPlans.length > 0) {
+          setAvailableSeatingPlans(prev => [...prev, ...linkedSeatingPlans, planToLink].filter(p => p.id !== planId));
+        } else {
+          setAvailableSeatingPlans(prev => prev.filter(p => p.id !== planId));
+        }
+        
+        // Set the new plan as the only linked plan
+        setLinkedSeatingPlans([planToLink]);
+        
+        // Update session's classrooms - replace with single plan
+        setSessions(prevSessions => 
+          prevSessions.map(session => 
+            session.id === selectedSessionForSeating.id
+              ? { 
+                  ...session, 
+                  classrooms: [{
+                    name: planToLink.classroom_name,
+                    seating_plan_id: planId,
+                    total_seats: planToLink.total_seats || (planToLink.seats ? planToLink.seats.length : 0)
+                  }]
+                }
+              : session
+          )
+        );
+      }
+      
+      await fetchSessionSeatingPlans(selectedSessionForSeating.id);
+      // Refresh session data to update button
+      await fetchData();
+    } catch (error) {
+      addNotification('error', error.response?.data?.message || 'Failed to link seating plan');
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
     }
   };
 
   const handleUnlinkSeatingPlan = async (planId) => {
+<<<<<<< HEAD
     if (planActionInFlightRef.current) return;
 
+=======
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
     if (!window.confirm('Are you sure you want to unlink this seating plan?')) {
       return;
     }
 
     try {
+<<<<<<< HEAD
       planActionInFlightRef.current = true;
       await adminService.unlinkSeatingPlanFromSession(selectedSessionForSeating.id, planId);
       showSuccess('Seating plan unlinked successfully');
@@ -193,6 +423,35 @@ function AdminExamSessions() {
       showError(error.response?.data?.message || 'Failed to unlink seating plan');
     } finally {
       planActionInFlightRef.current = false;
+=======
+      await adminService.unlinkSeatingPlanFromSession(selectedSessionForSeating.id, planId);
+      addNotification('success', 'Seating plan unlinked successfully');
+      
+      // Update local state immediately
+      const planToUnlink = linkedSeatingPlans.find(p => p.id === planId);
+      if (planToUnlink) {
+        setAvailableSeatingPlans(prev => [...prev, planToUnlink]);
+        setLinkedSeatingPlans(prev => prev.filter(p => p.id !== planId));
+        
+        // Update session's classrooms count
+        setSessions(prevSessions => 
+          prevSessions.map(session => 
+            session.id === selectedSessionForSeating.id
+              ? { 
+                  ...session, 
+                  classrooms: (session.classrooms || []).filter(c => c.seating_plan_id !== planId)
+                }
+              : session
+          )
+        );
+      }
+      
+      await fetchSessionSeatingPlans(selectedSessionForSeating.id);
+      // Refresh session data to update button
+      await fetchData();
+    } catch (error) {
+      addNotification('error', error.response?.data?.message || 'Failed to unlink seating plan');
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
     }
   };
 
@@ -203,10 +462,49 @@ function AdminExamSessions() {
 
     try {
       await adminService.deleteExamSession(sessionId);
+<<<<<<< HEAD
       showSuccess('Exam session deleted successfully');
       fetchData();
     } catch (error) {
       showError(error.response?.data?.message || 'Failed to delete session');
+=======
+      addNotification('success', 'Exam session deleted successfully');
+      fetchData();
+    } catch (error) {
+      addNotification('error', error.response?.data?.message || 'Failed to delete session');
+    }
+  };
+
+  const handleDeleteSeatingPlan = async (planId) => {
+    if (!window.confirm('Are you sure you want to delete this seating plan?')) {
+      return;
+    }
+
+    try {
+      await adminService.deleteSessionSeatingPlan(selectedSessionForSeating.id, planId);
+      addNotification('success', 'Seating plan deleted successfully');
+      
+      // Update local state immediately
+      setLinkedSeatingPlans(prev => prev.filter(plan => plan.id !== planId));
+      
+      // Update the session's classrooms count in the sessions list
+      setSessions(prevSessions => 
+        prevSessions.map(session => 
+          session.id === selectedSessionForSeating.id
+            ? { 
+                ...session, 
+                classrooms: (session.classrooms || []).filter(c => c.seating_plan_id !== planId) 
+              }
+            : session
+        )
+      );
+      
+      // Refresh from server
+      await fetchSessionSeatingPlans(selectedSessionForSeating.id);
+      await fetchData();
+    } catch (error) {
+      addNotification('error', 'Failed to delete seating plan');
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
     }
   };
 
@@ -222,6 +520,20 @@ function AdminExamSessions() {
     setEditingSession(null);
   };
 
+<<<<<<< HEAD
+=======
+  const resetSeatingForm = () => {
+    setSeatingFormData({
+      classroom_name: '',
+      total_seats: 5,
+    });
+    setSeats([]);
+    setSelectedSeatId(null);
+    setStudentName('');
+    setRollNumber('');
+  };
+
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
   const handleCloseModal = () => {
     setShowModal(false);
     resetForm();
@@ -229,6 +541,10 @@ function AdminExamSessions() {
 
   const handleCloseSeatingModal = () => {
     setShowSeatingModal(false);
+<<<<<<< HEAD
+=======
+    resetSeatingForm();
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
     setSelectedSessionForSeating(null);
     fetchData();
   };
@@ -252,12 +568,21 @@ function AdminExamSessions() {
 
   return (
     <div className="space-y-6">
+<<<<<<< HEAD
       <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-center">
         <div>
           <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Exam Sessions</h1>
           <p className="mt-1 sm:mt-2 text-sm sm:text-base text-gray-600 dark:text-gray-400">Manage exam sessions and assign classrooms</p>
         </div>
         <Button variant="primary" className="w-full sm:w-auto" onClick={() => setShowModal(true)}>
+=======
+      <div className="flex justify-between items-center">
+        <div>
+          <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Exam Sessions</h1>
+          <p className="mt-2 text-gray-600 dark:text-gray-400">Manage exam sessions and assign classrooms</p>
+        </div>
+        <Button variant="primary" onClick={() => setShowModal(true)}>
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
           + Create Session
         </Button>
       </div>
@@ -301,7 +626,11 @@ function AdminExamSessions() {
                 </p>
               </div>
               
+<<<<<<< HEAD
               <div className="flex flex-col sm:flex-row gap-2 mt-4">
+=======
+              <div className="flex gap-2 mt-4">
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
                 <Button 
                   variant="primary" 
                   onClick={() => handleOpenSeatingPlans(session)} 
@@ -335,8 +664,13 @@ function AdminExamSessions() {
 
       {/* Create/Edit Modal */}
       {showModal && (
+<<<<<<< HEAD
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 overflow-y-auto p-4">
           <div className="bg-white dark:bg-gray-800 rounded-lg p-4 sm:p-6 w-full max-w-2xl my-4 sm:my-8">
+=======
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 overflow-y-auto">
+          <div className="bg-white dark:bg-gray-800 rounded-lg p-6 w-full max-w-2xl my-8">
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
             <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-4">
               {editingSession ? 'Edit Exam Session' : 'Create New Exam Session'}
             </h2>
@@ -431,6 +765,7 @@ function AdminExamSessions() {
 
       {/* Seating Plans Modal */}
       {showSeatingModal && selectedSessionForSeating && (
+<<<<<<< HEAD
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4">
           <div className="bg-white dark:bg-gray-900 rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col">
 
@@ -558,6 +893,138 @@ function AdminExamSessions() {
               )}
             </div>
 
+=======
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 overflow-y-auto">
+          <div className="bg-white dark:bg-gray-800 rounded-lg p-6 w-full max-w-4xl my-8">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-2xl font-bold text-gray-900 dark:text-white">Seating Plans</h2>
+                <p className="text-sm text-gray-600 dark:text-gray-400">
+                  Session: {selectedSessionForSeating.name}
+                </p>
+              </div>
+              <Button variant="secondary" onClick={handleCloseSeatingModal}>
+                Close
+              </Button>
+            </div>
+
+            <Card>
+                <Card.Header>
+                  <Card.Title>Existing Seating Plans</Card.Title>
+                </Card.Header>
+                <Card.Content>
+                  {seatingPlanLoading ? (
+                    <div className="flex justify-center items-center h-32">
+                      <LoadingSpinner />
+                    </div>
+                  ) : (
+                    <div className="space-y-4">
+                      {/* Linked Plan (Single) */}
+                      <div>
+                        <div className="flex justify-between items-center mb-3">
+                          <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Assigned Seating Plan</h3>
+                          <span className={`text-xs px-2 py-1 rounded-full ${
+                            linkedSeatingPlans.length > 0 
+                              ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200' 
+                              : 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400'
+                          }`}>
+                            {linkedSeatingPlans.length > 0 ? 'Active' : 'Not Assigned'}
+                          </span>
+                        </div>
+                        {linkedSeatingPlans.length === 0 ? (
+                          <div className="border-2 border-dashed border-gray-300 dark:border-gray-700 rounded-lg p-6 text-center">
+                            <p className="text-sm text-gray-500 dark:text-gray-400 mb-1">No seating plan assigned</p>
+                            <p className="text-xs text-gray-400 dark:text-gray-500">Select one from available plans below</p>
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            {linkedSeatingPlans.map((plan) => (
+                              <div key={plan.id} className="border-2 border-green-300 dark:border-green-700 bg-green-50 dark:bg-green-900/20 rounded-lg p-4 shadow-sm">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="flex-1">
+                                    <div className="flex items-center gap-2 mb-1">
+                                      <p className="text-base font-semibold text-gray-900 dark:text-white">{plan.classroom_name || 'Unnamed'}</p>
+                                    </div>
+                                    <p className="text-sm text-gray-600 dark:text-gray-400">
+                                      {plan.total_seats || (plan.seats ? plan.seats.length : 0)} seats
+                                    </p>
+                                    {plan.occupied_seats && plan.occupied_seats > 0 && (
+                                      <p className="text-sm text-green-700 dark:text-green-400 mt-2 font-medium">
+                                        {plan.occupied_seats} student{plan.occupied_seats !== 1 ? 's' : ''} assigned
+                                      </p>
+                                    )}
+                                  </div>
+                                  <div className="flex gap-2 whitespace-nowrap">
+                                    <Button 
+                                      variant="outline" 
+                                      onClick={() => handleUnlinkSeatingPlan(plan.id)}
+                                      className="text-xs py-1"
+                                    >
+                                      Unlink
+                                    </Button>
+                                    <Button 
+                                      variant="danger" 
+                                      onClick={() => handleDeleteSeatingPlan(plan.id)}
+                                      className="text-xs py-1"
+                                    >
+                                      Delete
+                                    </Button>
+                                  </div>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Available Plans */}
+                      <div>
+                        <div className="flex justify-between items-center mb-3">
+                          <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Available Plans</h3>
+                          <span className="text-xs text-gray-500">
+                            {availableSeatingPlans.length} available
+                          </span>
+                        </div>
+                        {availableSeatingPlans.length === 0 ? (
+                          <div className="border-2 border-dashed border-gray-300 dark:border-gray-700 rounded-lg p-6 text-center">
+                            <p className="text-sm text-gray-500 dark:text-gray-400 mb-1">No available plans</p>
+                            <p className="text-xs text-gray-400 dark:text-gray-500">Create seating plans in the Seating Plans page</p>
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            {availableSeatingPlans.map((plan) => (
+                              <div key={plan.id} className="border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 rounded-lg p-3 hover:border-blue-300 dark:hover:border-blue-700 transition-colors">
+                                <div className="flex items-start justify-between gap-3">
+                                  <div className="flex-1">
+                                    <p className="font-medium text-gray-900 dark:text-white">{plan.classroom_name || 'Unnamed'}</p>
+                                    <p className="text-xs text-gray-600 dark:text-gray-400">
+                                      {plan.total_seats || (plan.seats ? plan.seats.length : 0)} seats
+                                    </p>
+                                    {plan.occupied_seats && plan.occupied_seats > 0 && (
+                                      <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
+                                        {plan.occupied_seats} student{plan.occupied_seats !== 1 ? 's' : ''} assigned
+                                      </p>
+                                    )}
+                                  </div>
+                                  <Button 
+                                    onClick={() => handleLinkSeatingPlan(plan.id)}
+                                    className="whitespace-nowrap text-xs py-1"
+                                    disabled={linkedSeatingPlans.length > 0}
+                                    title={linkedSeatingPlans.length > 0 ? 'Unlink the current plan first' : 'Link this plan to the session'}
+                                  >
+                                    Link
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </Card.Content>
+              </Card>
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
           </div>
         </div>
       )}

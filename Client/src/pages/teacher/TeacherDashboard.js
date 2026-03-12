@@ -274,12 +274,21 @@ function TeacherDashboard() {
   return (
     <div className="space-y-8">
       <div>
+<<<<<<< HEAD
         <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Teacher Dashboard</h1>
         <p className="mt-1 sm:mt-2 text-sm sm:text-base text-gray-600 dark:text-gray-400">Monitor exam sessions and manage alerts in real-time</p>
       </div>
 
       {/* Statistics Grid */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
+=======
+        <h1 className="text-3xl font-bold text-gray-900 dark:text-white">Teacher Dashboard</h1>
+        <p className="mt-2 text-gray-600 dark:text-gray-400">Monitor exam sessions and manage alerts in real-time</p>
+      </div>
+
+      {/* Statistics Grid */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+>>>>>>> 09b1cf1ba6896a676df61304aacba2bd9bb3bab8
         {statCards.map((stat) => (
           <Card key={stat.label}>
             <Card.Content className="p-6">
