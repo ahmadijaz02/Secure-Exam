@@ -1,0 +1,118 @@
+from flask import Flask, g
+from flask_jwt_extended import JWTManager
+from flask_bcrypt import Bcrypt
+from flask_cors import CORS
+from flask_socketio import SocketIO
+from pymongo import MongoClient
+from config import config
+
+# Initialize extensions
+jwt = JWTManager()
+bcrypt = Bcrypt()
+# threading mode so emit() from subprocess reader thread reaches clients reliably
+socketio = SocketIO(app=None, cors_allowed_origins="*", max_http_buffer_size=10_000_000, async_mode="threading")
+
+def create_app(config_name='default'):
+    app = Flask(__name__)
+    app.config.from_object(config[config_name])
+
+    # Initialize extensions with app
+    jwt.init_app(app)
+    bcrypt.init_app(app)
+    socketio.init_app(app)
+
+    # Configure CORS (allow frontend URLs for dev)
+    CORS(app, origins=[
+        app.config['FRONTEND_URL'],
+        'http://127.0.0.1:5173',
+        'http://localhost:5173',
+        'http://localhost:3000',
+        'http://127.0.0.1:3000'
+    ])
+
+    # Initialize MongoDB connection
+    if not app.config['MONGODB_URI']:
+        raise RuntimeError("MONGODB_URI is not set. Provide your MongoDB Atlas connection string in the environment or .env.")
+
+    print(f"🔗 Connecting to MongoDB...")
+    print(f"   URI: {app.config['MONGODB_URI']}")
+    print(f"   Database: {app.config['MONGODB_DB_NAME']}")
+
+    app.mongo_client = MongoClient(app.config['MONGODB_URI'])
+    app.db = app.mongo_client[app.config['MONGODB_DB_NAME']]
+
+    # Test MongoDB connection and show detailed info
+    try:
+        # Ping the database
+        app.mongo_client.admin.command('ping')
+
+        # Get server info
+        server_info = app.mongo_client.server_info()
+
+        # Get database stats
+        db_stats = app.db.command('dbstats')
+
+        print("✅ MongoDB connection successful!")
+        print(f"   Server Version: {server_info.get('version', 'Unknown')}")
+        print(f"   Server Host: {app.mongo_client.address[0]}:{app.mongo_client.address[1]}")
+        print(f"   Database Size: {db_stats.get('dataSize', 0)} bytes")
+        print(f"   Collections: {len(app.db.list_collection_names())}")
+
+        # List existing collections
+        collections = app.db.list_collection_names()
+        if collections:
+            print(f"   Existing Collections: {', '.join(collections)}")
+        else:
+            print("   No existing collections (will be created on first use)")
+
+    except Exception as e:
+        print(f"❌ MongoDB connection failed: {e}")
+        print("   Make sure MongoDB is running on localhost:27017")
+
+    # Register blueprints
+    from app.auth import bp as auth_bp
+    app.register_blueprint(auth_bp, url_prefix='/api/auth')
+
+    from app.main import bp as main_bp
+    app.register_blueprint(main_bp, url_prefix='/api')
+
+    from app.admin import bp as admin_bp
+    app.register_blueprint(admin_bp, url_prefix='/api/admin')
+    
+    from app.monitoring import bp as monitoring_bp
+    app.register_blueprint(monitoring_bp, url_prefix='/api/monitoring')
+
+    # Initialize models
+    print("📊 Initializing MongoDB models...")
+    from app.models import User, ExamSession, Incident, SeatingPlan
+
+    app.user_model = User(app.db)
+    print("   ✓ User model initialized")
+
+    app.exam_session_model = ExamSession(app.db)
+    print("   ✓ ExamSession model initialized")
+
+    app.incident_model = Incident(app.db)
+    print("   ✓ Incident model initialized")
+    
+    app.seating_plan_model = SeatingPlan(app.db)
+    print("   ✓ SeatingPlan model initialized")
+
+    print("🎯 All models ready for use!")
+
+    return app
+
+def get_db():
+    """Get database instance from current app"""
+    from flask import current_app
+    return current_app.db
+
+def get_models():
+    """Get model instances from current app"""
+    from flask import current_app
+    return {
+        'user': current_app.user_model,
+        'exam_session': current_app.exam_session_model,
+        'incident': current_app.incident_model,
+        'seating_plan': current_app.seating_plan_model
+    }

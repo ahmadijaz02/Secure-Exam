@@ -1,0 +1,20 @@
+# Node
+node_modules/
+.cache/
+dist/
+build/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Env
+.env
+venv/
+
+# OS
+.DS_Store
+Thumbs.db
+Server/app/__pycache__/__init__.cpython-311.pyc
+Server/app/__pycache__/models.cpython-311.pyc

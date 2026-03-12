@@ -1,0 +1,75 @@
+import React, { useState } from 'react';
+import { Link, useLocation } from 'react-router-dom';
+import { useAuth } from '../context/auth/AuthContext';
+import Header from '../components/navigation/Header';
+
+function TeacherLayout({ children }) {
+  const { logout } = useAuth();
+  const location = useLocation();
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+
+  const isActive = (path) => location.pathname.startsWith(path);
+
+  const teacherMenuItems = [
+    { label: 'Dashboard', path: '/teacher/dashboard', icon: '📊' },
+    { label: 'Active Sessions', path: '/teacher/sessions', icon: '📋' },
+    { label: 'Alerts', path: '/teacher/alerts', icon: '🚨' },
+    { label: 'Reports', path: '/teacher/reports', icon: '📈' },
+    { label: 'Profile', path: '/teacher/profile', icon: '👤' },
+  ];
+
+  return (
+    <div className="min-h-screen w-full bg-gray-50 dark:bg-gray-900">
+      <Header onMenuClick={() => setSidebarOpen(!sidebarOpen)} />
+
+      {/* Mobile overlay */}
+      {sidebarOpen && (
+        <div
+          className="fixed inset-0 bg-black/50 z-20 lg:hidden"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+      
+      {/* Sidebar */}
+      <aside className={`fixed left-0 top-16 w-64 h-[calc(100vh-64px)] bg-white dark:bg-gray-800 border-r border-gray-200 dark:border-gray-700 overflow-y-auto overflow-x-hidden z-30 transition-transform duration-300 ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'} lg:translate-x-0`}>
+        <div className="p-6">
+          <h2 className="text-xl font-bold text-gray-900 dark:text-white">Teacher Panel</h2>
+        </div>
+        
+        <nav className="space-y-1 px-4 pb-20">
+          {teacherMenuItems.map((item) => (
+            <Link
+              key={item.path}
+              to={item.path}
+              onClick={() => setSidebarOpen(false)}
+              className={`flex items-center px-4 py-3 rounded-lg transition ${
+                isActive(item.path)
+                  ? 'bg-blue-50 dark:bg-blue-900/20 text-blue-600 dark:text-blue-400'
+                  : 'text-gray-700 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700/50'
+              }`}
+            >
+              <span className="mr-3">{item.icon}</span>
+              {item.label}
+            </Link>
+          ))}
+        </nav>
+
+        <div className="border-t border-gray-200 dark:border-gray-700 p-4 absolute bottom-0 left-0 w-full bg-white dark:bg-gray-800">
+          <button
+            onClick={logout}
+            className="w-full px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition"
+          >
+            Logout
+          </button>
+        </div>
+      </aside>
+
+      {/* Main Content */}
+      <main className="p-4 pt-20 min-h-screen overflow-auto sm:p-6 sm:pt-20 lg:ml-64 lg:p-8 lg:pt-24">
+        {children}
+      </main>
+    </div>
+  );
+}
+
+export default TeacherLayout;
