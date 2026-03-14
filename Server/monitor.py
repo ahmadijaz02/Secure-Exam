@@ -101,6 +101,7 @@ MEDIAPIPE_PROCESS_EVERY_N_FRAMES = max(1, int(os.environ.get("MEDIAPIPE_PROCESS_
 DISABLE_MEDIAPIPE = os.environ.get("DISABLE_MEDIAPIPE", "0").lower() in ("1", "true", "yes", "on")
 YOLO_IMAGE_SIZE = int(os.environ.get("YOLO_IMAGE_SIZE", "960"))
 CAMERA_FPS = int(os.environ.get("MONITOR_CAMERA_FPS", "18"))
+CAMERA_SOURCE_RAW = str(os.environ.get("MONITOR_CAMERA_SOURCE", "0")).strip()
 USE_ONNX_RUNTIME_DML = os.environ.get("USE_ONNX_RUNTIME_DML", "auto").lower()
 DIRECTML_ERROR_BEFORE_CPU_FALLBACK = max(1, int(os.environ.get("DIRECTML_ERROR_BEFORE_CPU_FALLBACK", "5")))
 CAMERA_READ_LATEST = os.environ.get("CAMERA_READ_LATEST", "1").lower() in ("1", "true", "yes", "on")
@@ -109,6 +110,7 @@ SKIP_CAMERA_PROBE = os.environ.get("SKIP_CAMERA_PROBE", "1").lower() in ("1", "t
 CAMERA_WARMUP_FRAMES = max(0, int(os.environ.get("CAMERA_WARMUP_FRAMES", "2")))
 CAMERA_WARMUP_DELAY_SEC = max(0.0, float(os.environ.get("CAMERA_WARMUP_DELAY_SEC", "0.02")))
 POST_CAMERA_INIT_DELAY_SEC = max(0.0, float(os.environ.get("POST_CAMERA_INIT_DELAY_SEC", "0.2")))
+RTSP_TRANSPORT = str(os.environ.get("MONITOR_RTSP_TRANSPORT", "tcp")).strip().lower()
 
 # Tiled inference for small/distant object detection
 ENABLE_TILED_INFERENCE = os.environ.get("ENABLE_TILED_INFERENCE", "1").lower() in ("1", "true", "yes", "on")
@@ -386,6 +388,62 @@ def class_aware_nms(detections, iou_threshold=0.45):
         kept.extend(accepted)
 
     return kept
+
+
+def parse_camera_source(value):
+    """Parse camera source env value into OpenCV source type (index or URL/path)."""
+    if value is None:
+        return 0
+
+    source = str(value).strip()
+    if source == "":
+        return 0
+
+    if source.lstrip("+-").isdigit():
+        try:
+            return int(source)
+        except Exception:
+            return 0
+
+    return source
+
+
+def open_camera_capture(camera_source):
+    """Open camera with sensible backend preference for local cams and RTSP URLs."""
+    if isinstance(camera_source, int):
+        cap = cv2.VideoCapture(camera_source, cv2.CAP_DSHOW)
+        if cap.isOpened():
+            return cap
+
+        emit("Error: Could not open camera with DSHOW. Trying MSMF...")
+        cap = cv2.VideoCapture(camera_source, cv2.CAP_MSMF)
+        if cap.isOpened():
+            return cap
+
+        emit("Error: Could not open camera with MSMF. Trying default backend...")
+        cap = cv2.VideoCapture(camera_source)
+        if cap.isOpened():
+            return cap
+
+        return cap
+
+    source_text = str(camera_source)
+    source_lower = source_text.lower()
+    if source_lower.startswith("rtsp://"):
+        # Prefer TCP transport for Hikvision stability on LAN/Wi-Fi.
+        transport = "tcp" if RTSP_TRANSPORT not in ("tcp", "udp") else RTSP_TRANSPORT
+        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = f"rtsp_transport;{transport}|stimeout;5000000"
+
+        cap = cv2.VideoCapture(source_text, cv2.CAP_FFMPEG)
+        if cap.isOpened():
+            return cap
+
+        emit("RTSP open with FFMPEG failed. Trying default backend...")
+        cap = cv2.VideoCapture(source_text)
+        return cap
+
+    cap = cv2.VideoCapture(source_text)
+    return cap
 
 
 def decode_onnx_predictions(raw_output, original_shape, ratio, dw, dh, conf_threshold=0.2, iou_threshold=0.45):
@@ -735,16 +793,12 @@ def run_system():
     else:
         emit("Skipping camera probe for faster startup")
     
-    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)  # Use DirectShow on Windows
+    camera_source = parse_camera_source(CAMERA_SOURCE_RAW)
+    emit(f"Opening camera source: {CAMERA_SOURCE_RAW}")
+    cap = open_camera_capture(camera_source)
     if not cap.isOpened():
-        emit("Error: Could not open camera with DSHOW. Trying backend API...")
-        cap = cv2.VideoCapture(0, cv2.CAP_MSMF)  # Try Media Foundation
-        if not cap.isOpened():
-            emit("Error: Could not open camera. Trying default...")
-            cap = cv2.VideoCapture(0)
-            if not cap.isOpened():
-                emit("Error: Could not open any camera. Please check camera permissions.")
-                return
+        emit("Error: Could not open configured camera source. Please verify MONITOR_CAMERA_SOURCE and camera credentials/network.")
+        return
     
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)

@@ -624,6 +624,11 @@ def start_monitoring():
         data = request.get_json(silent=True) or {}
         session_id = data.get('session_id')
         quality_preset = str(data.get('quality_preset') or 'balanced').strip().lower()
+        camera_source = data.get('camera_source')
+        if camera_source is not None:
+            camera_source = str(camera_source).strip()
+            if not camera_source:
+                camera_source = None
         if not session_id:
             return jsonify({'error': 'session_id is required'}), 400
         if quality_preset not in MONITOR_QUALITY_PRESETS:
@@ -691,6 +696,7 @@ def start_monitoring():
                 'PYTHONUNBUFFERED': '1',
                 'EXAM_SESSION_FOLDER': session_folder,
                 'MONITOR_QUALITY_PRESET': quality_preset,
+                'MONITOR_CAMERA_SOURCE': camera_source or os.environ.get('MONITOR_CAMERA_SOURCE', '0'),
             }
         )
 
@@ -712,6 +718,7 @@ def start_monitoring():
             'pid': current_process.pid,
             'session_id': session_id,
             'quality_preset': quality_preset,
+            'camera_source': camera_source or os.environ.get('MONITOR_CAMERA_SOURCE', '0'),
         }), 200
 
     except Exception as e:

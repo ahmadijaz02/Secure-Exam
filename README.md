@@ -208,6 +208,31 @@ SMTP_PASSWORD=your-app-password
 CLOUDINARY_CLOUD_NAME=your-cloud-name
 CLOUDINARY_API_KEY=your-api-key
 CLOUDINARY_API_SECRET=your-api-secret
+
+# Camera Feed (Optional)
+# Local webcam index (default):
+# MONITOR_CAMERA_SOURCE=0
+#
+# Hikvision RTSP example:
+# rtsp://<username>:<password>@<camera-ip>:554/Streaming/Channels/101
+# 101 = main stream, 102 = sub stream
+# URL-encode special characters in password (e.g. @ -> %40)
+MONITOR_CAMERA_SOURCE=0
+MONITOR_RTSP_TRANSPORT=tcp
+```
+
+### Hikvision Feed Setup
+
+1. Ensure your camera and server machine are on the same network.
+2. Enable RTSP in Hikvision camera settings and confirm the port (usually `554`).
+3. In `Server/.env`, set `MONITOR_CAMERA_SOURCE` to your camera RTSP URL.
+4. Restart the backend server, then start monitoring from the teacher dashboard.
+
+Example:
+
+```env
+MONITOR_CAMERA_SOURCE=rtsp://admin:MyPass123@192.168.1.64:554/Streaming/Channels/101
+MONITOR_RTSP_TRANSPORT=tcp
 ```
 
 ## 🧪 Testing
