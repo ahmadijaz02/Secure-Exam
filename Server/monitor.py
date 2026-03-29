@@ -184,7 +184,7 @@ EXTENDED_YOLO_CLASSES = [
     # Mobile phones - clear identifiers
     "mobile phone", "cell phone", "cellphone", "smartphone", "phone", "mobile", "mobile device",
     # Phone locations indicating active cheating/hiding
-    "phone in hand", "cell phone in hand", "phone under desk", "phone between legs", "phone in lap", "phone on lap",
+    "phone in hand", "cell phone in hand", "phone between legs", "phone in lap", "phone on lap",
     # Watches
     "wristwatch", "smartwatch", "analog watch",
     # Papers and notebooks for cheating
@@ -204,7 +204,7 @@ OBJECT_DRAW_MIN_CONF = _env_float("OBJECT_DRAW_MIN_CONF", max(0.25, MODEL_INFER_
 MEDIAPIPE_PROCESS_EVERY = _env_int_profiled("MEDIAPIPE_PROCESS_EVERY", 4)
 HAND_GESTURE_ENABLED = _env_bool_profiled("HAND_GESTURE_ENABLED", True)
 HAND_GESTURE_MIN_CONFIDENCE = _env_float_profiled("HAND_GESTURE_MIN_CONFIDENCE", 0.5)
-HAND_GESTURE_REQUIRE_FRAMES = _env_int_profiled("HAND_GESTURE_REQUIRE_FRAMES", 2)
+HAND_GESTURE_REQUIRE_FRAMES = _env_int_profiled("HAND_GESTURE_REQUIRE_FRAMES", 4)
 
 # Alert configuration (aligned with exam_monitor.py)
 ALERT_CONFIRM_FRAMES = max(1, _env_int("ALERT_CONFIRM_FRAMES", 3))  # Changed from 1 to 3
@@ -542,7 +542,8 @@ class HandFaceMovementDetector:
         matched_hands = []
         for hand in hand_multi:
             wrist = hand[0]
-            if abs(wrist.x - face_x) < 0.3:
+            # Match hands that are relatively close to the face horizontally
+            if abs(wrist.x - face_x) < 0.4:
                 matched_hands.append(hand)
         
         return matched_hands
@@ -776,7 +777,7 @@ class HandFaceMovementDetector:
 class YOLOWorldDetector:
     MOBILE_CLASSES = {
         "mobile phone", "cell phone", "cellphone", "phone", "smartphone", "smart phone",
-        "mobile", "mobile device", "cell phone in hand", "phone under desk",
+        "mobile", "mobile device", "cell phone in hand",
         "phone between legs", "phone in lap", "phone on lap", "phone on desk",
         "phone on table", "phone lying down", "phone laying down", "phone face up",
         "phone face down", "lying smartphone", "flat smartphone",
