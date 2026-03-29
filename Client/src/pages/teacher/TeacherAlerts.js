@@ -9,6 +9,7 @@ function TeacherAlerts() {
   const [sessions, setSessions] = useState([]);
   const [selectedSessionId, setSelectedSessionId] = useState('all');
   const [incidents, setIncidents] = useState([]);
+  const [filterText, setFilterText] = useState('');
   const [isLoadingSessions, setIsLoadingSessions] = useState(true);
   const [isLoadingIncidents, setIsLoadingIncidents] = useState(false);
   const [error, setError] = useState('');
@@ -53,6 +54,17 @@ function TeacherAlerts() {
     () => sessions.find((session) => session.id === selectedSessionId),
     [sessions, selectedSessionId]
   );
+
+  const filteredIncidents = useMemo(() => {
+    if (!filterText.trim()) return incidents;
+    const lowerFilter = filterText.toLowerCase();
+    return incidents.filter(i =>
+      (i.student_name && i.student_name.toLowerCase().includes(lowerFilter)) ||
+      (i.roll_number && i.roll_number.toLowerCase().includes(lowerFilter)) ||
+      (i.incident_type && i.incident_type.toLowerCase().includes(lowerFilter)) ||
+      (i.description && i.description.toLowerCase().includes(lowerFilter))
+    );
+  }, [incidents, filterText]);
 
   const formatDateTime = (value) => {
     if (!value) return 'N/A';
@@ -128,7 +140,16 @@ function TeacherAlerts() {
 
       <Card>
         <Card.Header>
-          <Card.Title>Session Alerts</Card.Title>
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 w-full">
+            <Card.Title>Session Alerts</Card.Title>
+            <input
+              type="text"
+              placeholder="Search evidence..."
+              value={filterText}
+              onChange={(e) => setFilterText(e.target.value)}
+              className="w-full sm:w-64 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-2 text-sm text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
         </Card.Header>
         <Card.Content className="p-6">
           {error ? <p className="text-red-600 dark:text-red-400">{error}</p> : null}
@@ -139,9 +160,11 @@ function TeacherAlerts() {
             </div>
           ) : incidents.length === 0 ? (
             <p className="text-gray-600 dark:text-gray-400">No alerts recorded.</p>
+          ) : filteredIncidents.length === 0 ? (
+            <p className="text-gray-600 dark:text-gray-400">No alerts match your search.</p>
           ) : (
             <div className="space-y-3">
-              {incidents.map((incident) => (
+              {filteredIncidents.map((incident) => (
                 <div
                   key={incident.id}
                   className="border border-gray-200 dark:border-gray-700 rounded-lg p-4"

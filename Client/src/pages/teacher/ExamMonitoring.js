@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import monitoringService from '../../api/services/monitoringService';
 import socketService from '../../utils/socket';
@@ -8,9 +8,9 @@ import Card from '../../components/ui/Card';
 import LoadingSpinner from '../../components/ui/LoadingSpinner';
 
 // Same pattern as FYP: default namespace, "frame" (raw base64) and "log" (string)
-const ExamMonitoring = () => {
-    const objectAlertReasons = ['PHONE_DETECTED', 'WATCH_DETECTED', 'PAPER_PASSING'];
+const objectAlertReasons = ['PHONE_DETECTED', 'WATCH_DETECTED', 'PAPER_PASSING'];
 
+const ExamMonitoring = () => {
   const navigate = useNavigate();
   const { examSessionId } = useParams();
   const notification = useNotification();
@@ -27,6 +27,7 @@ const ExamMonitoring = () => {
   const [lastFrameAt, setLastFrameAt] = useState(null);
   const [isSocketConnected, setIsSocketConnected] = useState(false);
   const [bootElapsedSec, setBootElapsedSec] = useState(0);
+  const [alertFilterText, setAlertFilterText] = useState('');
 
   const videoImgRef = useRef(null);
   const latestFrameRef = useRef(null);
@@ -211,6 +212,16 @@ const ExamMonitoring = () => {
     return objectAlertReasons.includes(reason) ? 'high' : 'low';
   };
 
+  const filteredAlerts = useMemo(() => {
+    if (!alertFilterText.trim()) return alerts;
+    const lower = alertFilterText.toLowerCase();
+    return alerts.filter(a =>
+      (a.student_name && a.student_name.toLowerCase().includes(lower)) ||
+      (a.roll_number && a.roll_number.toLowerCase().includes(lower)) ||
+      (a.reason && a.reason.toLowerCase().includes(lower))
+    );
+  }, [alerts, alertFilterText]);
+
   const playAlertSound = () => {
     try {
       const ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -333,7 +344,16 @@ const ExamMonitoring = () => {
 
           <Card className="min-w-0">
             <div className="p-4 sm:p-6">
-              <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">Alerts ({alerts.length})</h2>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-4 gap-2">
+                <h2 className="text-xl font-semibold text-gray-900 dark:text-white">Alerts ({alerts.length})</h2>
+                <input
+                  type="text"
+                  placeholder="Filter alerts..."
+                  value={alertFilterText}
+                  onChange={(e) => setAlertFilterText(e.target.value)}
+                  className="w-full sm:w-auto rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm text-gray-900 dark:text-gray-100"
+                />
+              </div>
               <div className="space-y-3 max-h-[50vh] lg:max-h-[500px] overflow-y-auto">
                 {alerts.length === 0 ? (
                   <div className="text-center text-gray-500 py-8">
@@ -342,8 +362,12 @@ const ExamMonitoring = () => {
                     </svg>
                     <p>No alerts detected</p>
                   </div>
+                ) : filteredAlerts.length === 0 ? (
+                  <div className="text-center text-gray-500 py-8">
+                    <p>No alerts match your filter.</p>
+                  </div>
                 ) : (
-                  alerts.map((alert) => {
+                  filteredAlerts.map((alert) => {
                     const severity = alert.severity || getAlertSeverity(alert.reason);
                     const colors = {
                       high: 'bg-red-100 border-red-500 text-red-800 dark:bg-red-900 dark:text-red-200',
