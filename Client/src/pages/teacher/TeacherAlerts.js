@@ -64,11 +64,26 @@ function TeacherAlerts() {
   const resolveEvidenceUrl = (value) => {
     if (!value) return '';
     if (value.startsWith('http')) return value;
-    if (value.startsWith('/api/')) {
+    const normalized = String(value).replace(/\\/g, '/');
+
+    if (/^[A-Za-z]:\//.test(normalized) || normalized.includes('/suspicious_alerts/')) {
+      const marker = '/suspicious_alerts/';
+      const idx = normalized.toLowerCase().indexOf(marker);
+      const relative = idx >= 0 ? normalized.slice(idx + marker.length) : normalized.split('/').pop();
       const apiOrigin = API_CONFIG.BASE_URL.replace(/\/api\/?$/, '');
-      return `${apiOrigin}${value}`;
+      return `${apiOrigin}/api/alerts/${relative}`;
     }
-    return `${API_CONFIG.BASE_URL}${value.startsWith('/') ? value : `/${value}`}`;
+
+    if (normalized.startsWith('suspicious_alerts/')) {
+      const apiOrigin = API_CONFIG.BASE_URL.replace(/\/api\/?$/, '');
+      return `${apiOrigin}/api/alerts/${normalized.slice('suspicious_alerts/'.length)}`;
+    }
+
+    if (normalized.startsWith('/api/')) {
+      const apiOrigin = API_CONFIG.BASE_URL.replace(/\/api\/?$/, '');
+      return `${apiOrigin}${normalized}`;
+    }
+    return `${API_CONFIG.BASE_URL}${normalized.startsWith('/') ? normalized : `/${normalized}`}`;
   };
 
   return (

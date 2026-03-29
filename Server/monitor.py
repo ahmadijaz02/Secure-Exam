@@ -1,1211 +1,1129 @@
+"""Integrated Exam Monitoring System with Flask streaming support.
+
+Combines the advanced MediaPipe hand/face detection from exam_monitor.py
+with the Flask streaming format (FRAME: and ALERT: outputs) required by the
+Flask parent process to forward to Socket.IO clients.
 """
-Modified monitoring script to integrate with backend. It prints alert messages to stdout so that server can relay via socket.io to dashboard.
-"""
+
+from __future__ import annotations
+
+import base64
+import os
+import signal
+import sys
+import threading
+import time
+import logging
+import argparse
+from collections import deque
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional, Sequence, Tuple
+
 import cv2
 import numpy as np
-import mediapipe as mp
 from ultralytics import YOLO
-import math
-import os
-import time
-from datetime import datetime
-import torch
-import sys
-import base64
-import io
-import pickle
-import threading
 
 try:
-    import torch_directml
-except Exception:
-    torch_directml = None
+    import mediapipe as mp
+except ImportError:
+    mediapipe = None
+    mp = None
 
 try:
-    import onnxruntime as ort
+    import onnxruntime as ort  # type: ignore[reportMissingImports]
 except Exception:
     ort = None
 
+try:
+    import winsound  # Windows-only
+except Exception:
+    winsound = None
 
-def patch_ultralytics_inference_mode():
-    """Patch Ultralytics smart_inference_mode-wrapped method to use no_grad for better runtime compatibility."""
+# ---------------------------------------------------------------------------
+# Environment helpers (from original monitor.py)
+# ---------------------------------------------------------------------------
+
+def _env_int(name: str, default: int) -> int:
     try:
-        from ultralytics.engine.predictor import BasePredictor
-        stream_inference = getattr(BasePredictor, "stream_inference", None)
-        unwrapped = getattr(stream_inference, "__wrapped__", None)
-        if not callable(unwrapped):
-            emit("Ultralytics inference patch not applied (no wrapped function found)")
-            return
-        BasePredictor.stream_inference = torch.no_grad()(unwrapped)
-        emit("Applied Ultralytics no_grad inference patch")
-    except Exception as exc:
-        emit(f"Warning: could not patch Ultralytics inference mode: {exc}")
+        return int(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return int(default)
 
-
-def patch_ultralytics_nms_for_directml():
-    """Run Ultralytics NMS on CPU when predictions come from DirectML tensors."""
+def _env_float(name: str, default: float) -> float:
     try:
-        import sys
-        import ultralytics.utils.nms as nms_module
-        original_nms = getattr(nms_module, "non_max_suppression", None)
-        if not callable(original_nms):
-            emit("Ultralytics NMS patch not applied (function not found)")
-            return
-        if getattr(original_nms, "_secure_exam_patched", False):
-            return
+        return float(os.environ.get(name, default))
+    except (TypeError, ValueError):
+        return float(default)
 
-        def directml_safe_nms(prediction, *args, **kwargs):
-            try:
-                if hasattr(prediction, "device") and str(prediction.device).startswith("privateuseone"):
-                    prediction = prediction.cpu()
-            except Exception:
-                pass
-            return original_nms(prediction, *args, **kwargs)
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
-        directml_safe_nms._secure_exam_patched = True
-        nms_module.non_max_suppression = directml_safe_nms
-        patched_refs = 1
+def _profiled_env(name: str, default: Optional[str] = None) -> Optional[str]:
+    """Return an environment value, honoring the current camera mode prefix."""
+    mode = os.environ.get("MONITOR_CAMERA_MODE", "").strip().upper()
+    if mode:
+        override_key = f"{mode}_{name}"
+        if override_key in os.environ:
+            return os.environ[override_key]
+    if name in os.environ:
+        return os.environ[name]
+    return default
 
-        for module_name, module in list(sys.modules.items()):
-            if not module_name or not module_name.startswith("ultralytics"):
-                continue
-            try:
-                current = getattr(module, "non_max_suppression", None)
-                if current is original_nms:
-                    setattr(module, "non_max_suppression", directml_safe_nms)
-                    patched_refs += 1
-            except Exception:
-                continue
+def _env_int_profiled(name: str, default: int) -> int:
+    value = _profiled_env(name)
+    if value is None:
+        return int(default)
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return int(default)
 
+def _env_float_profiled(name: str, default: float) -> float:
+    value = _profiled_env(name)
+    if value is None:
+        return float(default)
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+def _env_bool_profiled(name: str, default: bool) -> bool:
+    value = _profiled_env(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+def _parse_camera_source(raw_value: str) -> int | str:
+    raw_value = (raw_value or "0").strip()
+    try:
+        return int(raw_value)
+    except ValueError:
+        return raw_value
+
+# ---------------------------------------------------------------------------
+# Paths and global state
+# ---------------------------------------------------------------------------
+
+BASE_DIR = Path(__file__).resolve().parent
+SUSPICIOUS_DIR = BASE_DIR / "suspicious_alerts"
+SUSPICIOUS_DIR.mkdir(parents=True, exist_ok=True)
+
+SESSION_FOLDER = os.environ.get("EXAM_SESSION_FOLDER")
+if not SESSION_FOLDER:
+    SESSION_FOLDER = f"session-{datetime.now().strftime('%Y-%m-%d')}"
+SESSION_DIR = SUSPICIOUS_DIR / SESSION_FOLDER
+SESSION_DIR.mkdir(parents=True, exist_ok=True)
+
+stop_event = threading.Event()
+
+def _install_signal_handlers() -> None:
+    def _handler(signum, _frame):
+        log(f"Received signal {signum}; shutting down...")
+        stop_event.set()
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
         try:
-            import ultralytics.nn.autobackend as autobackend_module
-            if getattr(autobackend_module, "non_max_suppression", None) is not directml_safe_nms:
-                autobackend_module.non_max_suppression = directml_safe_nms
-                patched_refs += 1
+            signal.signal(sig, _handler)
         except Exception:
-            pass
+            pass  # Windows only delivers SIGINT; ignore unsupported ones.
 
-        emit(f"Applied Ultralytics DirectML-safe NMS patch (CPU NMS) to {patched_refs} reference(s)")
-    except Exception as exc:
-        emit(f"Warning: could not patch Ultralytics NMS for DirectML: {exc}")
+_install_signal_handlers()
 
-FRAME_WIDTH = int(os.environ.get("MONITOR_FRAME_WIDTH", "1280"))
-FRAME_HEIGHT = int(os.environ.get("MONITOR_FRAME_HEIGHT", "720"))
-STREAM_WIDTH = int(os.environ.get("STREAM_WIDTH", "640"))
-STREAM_HEIGHT = int(os.environ.get("STREAM_HEIGHT", "360"))
-STREAM_JPEG_QUALITY = max(10, min(90, int(os.environ.get("STREAM_JPEG_QUALITY", "68"))))
-STREAM_TARGET_FPS = max(1, int(os.environ.get("STREAM_TARGET_FPS", "12")))
-YOLO_MAX_DETECTIONS = max(1, int(os.environ.get("YOLO_MAX_DETECTIONS", "50")))
-YOLO_PROCESS_EVERY_N_FRAMES = max(1, int(os.environ.get("YOLO_PROCESS_EVERY", "2")))
-MEDIAPIPE_PROCESS_EVERY_N_FRAMES = max(1, int(os.environ.get("MEDIAPIPE_PROCESS_EVERY", "4")))
-DISABLE_MEDIAPIPE = os.environ.get("DISABLE_MEDIAPIPE", "0").lower() in ("1", "true", "yes", "on")
-YOLO_IMAGE_SIZE = int(os.environ.get("YOLO_IMAGE_SIZE", "960"))
-CAMERA_FPS = int(os.environ.get("MONITOR_CAMERA_FPS", "18"))
-USE_ONNX_RUNTIME_DML = os.environ.get("USE_ONNX_RUNTIME_DML", "auto").lower()
-DIRECTML_ERROR_BEFORE_CPU_FALLBACK = max(1, int(os.environ.get("DIRECTML_ERROR_BEFORE_CPU_FALLBACK", "5")))
-CAMERA_READ_LATEST = os.environ.get("CAMERA_READ_LATEST", "1").lower() in ("1", "true", "yes", "on")
-CAMERA_BUFFER_FLUSH = max(0, int(os.environ.get("CAMERA_BUFFER_FLUSH", "2")))
-SKIP_CAMERA_PROBE = os.environ.get("SKIP_CAMERA_PROBE", "1").lower() in ("1", "true", "yes", "on")
-CAMERA_WARMUP_FRAMES = max(0, int(os.environ.get("CAMERA_WARMUP_FRAMES", "2")))
-CAMERA_WARMUP_DELAY_SEC = max(0.0, float(os.environ.get("CAMERA_WARMUP_DELAY_SEC", "0.02")))
-POST_CAMERA_INIT_DELAY_SEC = max(0.0, float(os.environ.get("POST_CAMERA_INIT_DELAY_SEC", "0.2")))
+# ---------------------------------------------------------------------------
+# Configuration (combining both systems)
+# ---------------------------------------------------------------------------
 
-# Tiled inference for small/distant object detection
-ENABLE_TILED_INFERENCE = os.environ.get("ENABLE_TILED_INFERENCE", "1").lower() in ("1", "true", "yes", "on")
-TILE_OVERLAP = 0.15  # 15% overlap between tiles
-TILE_CONF_BOOST = 1.0  # no extra penalty — base thresholds are already strict enough
-TILED_INFERENCE_EVERY_N = max(1, int(os.environ.get("TILED_INFERENCE_EVERY", "3")))  # run tiled every N YOLO frames
+# Camera configuration
+CAMERA_MODE = os.environ.get("MONITOR_CAMERA_MODE", "external").strip().lower() or "external"
+CAMERA_SOURCE = _parse_camera_source(_profiled_env("MONITOR_CAMERA_SOURCE", "0"))
+CAMERA_BACKEND = (_profiled_env("MONITOR_CAMERA_BACKEND", "auto") or "auto").strip().lower()
+CAMERA_WARMUP_FRAMES = _env_int_profiled("CAMERA_WARMUP_FRAMES", 2)
+CAMERA_WARMUP_DELAY_SEC = _env_float_profiled("CAMERA_WARMUP_DELAY_SEC", 0.02)
+POST_CAMERA_INIT_DELAY_SEC = _env_float_profiled("POST_CAMERA_INIT_DELAY_SEC", 0.2)
+CAMERA_FAILURE_BACKOFF_SEC = _env_float_profiled("CAMERA_FAILURE_BACKOFF_SEC", 1.0)
+CAMERA_READ_LATEST = _env_bool_profiled("CAMERA_READ_LATEST", True)
+CAMERA_BUFFER_FLUSH = _env_int_profiled("CAMERA_BUFFER_FLUSH", 0)
+MONITOR_CAMERA_FPS = _env_float_profiled("MONITOR_CAMERA_FPS", 20.0)
 
-# CLAHE preprocessing for better contrast on distant objects
-ENABLE_CLAHE = os.environ.get("ENABLE_CLAHE", "1").lower() in ("1", "true", "yes", "on")
-CLAHE_CLIP_LIMIT = float(os.environ.get('CLAHE_CLIP_LIMIT', "2.5"))
-CLAHE_TILE_SIZE = int(os.environ.get("CLAHE_TILE_SIZE", "8"))
+# Processing configuration
+PROCESS_WIDTH = max(64, _env_int_profiled("MONITOR_FRAME_WIDTH", 1280))
+PROCESS_HEIGHT = max(64, _env_int_profiled("MONITOR_FRAME_HEIGHT", 720))
+FORCE_PROCESS_RESIZE = _env_bool_profiled("FORCE_PROCESS_RESIZE", False)
+ENABLE_CLAHE = _env_bool_profiled("ENABLE_CLAHE", False)
 
-SAVE_ALERTS = True
-ALERT_COOLDOWN = 3.0
-output_folder = "suspicious_alerts"
-os.makedirs(output_folder, exist_ok=True)
+# Streaming configuration (from original monitor.py)
+STREAM_WIDTH = _env_int("STREAM_WIDTH", 960)
+STREAM_HEIGHT = _env_int("STREAM_HEIGHT", 540)
+STREAM_JPEG_QUALITY = min(100, max(20, _env_int("STREAM_JPEG_QUALITY", 75)))
+STREAM_JPEG_OPTIMIZE = _env_bool("STREAM_JPEG_OPTIMIZE", True)
+STREAM_JPEG_PROGRESSIVE = _env_bool("STREAM_JPEG_PROGRESSIVE", True)
+STREAM_TARGET_FPS = max(1.0, _env_float("STREAM_TARGET_FPS", 15.0))
 
-PHONE_SEARCH_CONF = 0.20
-PHONE_MIN_CONF = 0.35
-PHONE_PERSISTENCE = 2
-PHONE_NO_TRACK_PERSISTENCE = 1
-PHONE_NO_TRACK_MIN_CONF = 0.32
-PHONE_MIN_AREA = 400
-PHONE_MAX_AREA = 80000
-PHONE_MIN_AREA_FRACTION = float(os.environ.get("PHONE_MIN_AREA_FRACTION", "0.0004"))
-PHONE_MAX_AREA_FRACTION = float(os.environ.get("PHONE_MAX_AREA_FRACTION", "0.22"))
-PHONE_MIN_ASPECT = 0.2
-PHONE_MAX_ASPECT = 5.0
-PHONE_HIGH_CONF_OVERRIDE = float(os.environ.get("PHONE_HIGH_CONF_OVERRIDE", "0.80"))
-PHONE_REQUIRE_PERSON_CONTEXT = os.environ.get("PHONE_REQUIRE_PERSON_CONTEXT", "0").lower() in ("1", "true", "yes", "on")
-PHONE_NO_PERSON_MIN_CONF = float(os.environ.get("PHONE_NO_PERSON_MIN_CONF", "0.55"))
-PHONE_EDGE_MARGIN_FRACTION = float(os.environ.get("PHONE_EDGE_MARGIN_FRACTION", "0.02"))
-PHONE_EDGE_STRICT_CONF = float(os.environ.get("PHONE_EDGE_STRICT_CONF", "0.75"))
-PHONE_PERSON_EXPAND_RATIO = float(os.environ.get("PHONE_PERSON_EXPAND_RATIO", "0.20"))
+# YOLO configuration
+YOLO_IMAGE_SIZE = max(320, _env_int("YOLO_IMAGE_SIZE", 960))
+YOLO_PROCESS_EVERY = max(1, _env_int("YOLO_PROCESS_EVERY", 2))
+YOLO_MAX_DETECTIONS = max(10, _env_int("YOLO_MAX_DETECTIONS", 80))
+USE_ONNX_RUNTIME_DML = os.environ.get("USE_ONNX_RUNTIME_DML", "0").strip().lower() in {"1", "true", "yes", "on"}
+YOLO_DEVICE_PREF = os.environ.get("YOLO_DEVICE", "cpu")
+YOLO_MODEL_PATH = os.environ.get("YOLO_WORLD_MODEL", "yolov8m-worldv2.pt")
+if not os.path.isabs(YOLO_MODEL_PATH):
+    YOLO_MODEL_PATH = str(BASE_DIR / YOLO_MODEL_PATH)
 
-GENERAL_DISPLAY_CONF = 0.30
-WATCH_DISPLAY_CONF = 0.22
+YOLO_CLASSES = [cls.strip() for cls in os.environ.get(
+    "YOLO_WORLD_CLASSES",
+    "cell phone, wrist watch, exam paper, answer sheet, question paper",
+).split(",") if cls.strip()]
 
-# ---- Custom model class names: Hand Gesture, Head, Phone, paper, person, watch ----
-# Since the model has NO furniture classes, misclassifications happen when the
-# model is forced to pick the nearest class for a chair/desk shape (often
-# "Phone" at low confidence).  We therefore apply strict per-class validation.
+# Extended YOLO classes from exam_monitor.py
+EXTENDED_YOLO_CLASSES = [
+    # Mobile phones - clear identifiers
+    "mobile phone", "cell phone", "cellphone", "smartphone", "phone", "mobile", "mobile device",
+    # Phone locations indicating active cheating/hiding
+    "phone in hand", "cell phone in hand", "phone under desk", "phone between legs", "phone in lap", "phone on lap",
+    # Watches
+    "wristwatch", "smartwatch", "analog watch",
+    # Papers and notebooks for cheating
+    "paper", "sheet of paper", "notebook", "cheat sheet", "document", "textbook", "printed paper", "book",
+]
 
-# Classes that are ALWAYS interesting for alerts — others are contextual.
-ALERT_CLASSES = {'phone', 'watch', 'paper'}
-OPERATIONAL_CLASSES = {'person', 'phone', 'watch', 'paper'}
+# Detection thresholds (aligned with exam_monitor.py)
+GENERAL_DISPLAY_CONF = _env_float("GENERAL_DISPLAY_CONF", 0.25)  # Changed from 0.12 to 0.25
+PHONE_MIN_CONF = _env_float("PHONE_MIN_CONF", 0.60)  # Changed from 0.35 to 0.60
+PHONE_CLASS_MIN_CONF = _env_float("PHONE_CLASS_MIN_CONF", max(0.40, PHONE_MIN_CONF))
+WATCH_CLASS_MIN_CONF = _env_float("WATCH_CLASS_MIN_CONF", 0.20)
+PAPER_CLASS_MIN_CONF = _env_float("PAPER_CLASS_MIN_CONF", max(0.20, GENERAL_DISPLAY_CONF))
+MODEL_INFER_CONF = _env_float("MODEL_INFER_CONF", max(0.25, GENERAL_DISPLAY_CONF))  # Changed from 0.08 to 0.25
+OBJECT_DRAW_MIN_CONF = _env_float("OBJECT_DRAW_MIN_CONF", max(0.25, MODEL_INFER_CONF))  # Changed from 0.10 to 0.25
 
-# Maximum box area (fraction of frame) — detections covering >25% of the frame
-# are almost certainly furniture, walls, or false positives.
-MAX_BOX_FRAME_FRACTION = 0.25
+# MediaPipe configuration (aligned with exam_monitor.py)
+MEDIAPIPE_PROCESS_EVERY = _env_int_profiled("MEDIAPIPE_PROCESS_EVERY", 4)
+HAND_GESTURE_ENABLED = _env_bool_profiled("HAND_GESTURE_ENABLED", True)
+HAND_GESTURE_MIN_CONFIDENCE = _env_float_profiled("HAND_GESTURE_MIN_CONFIDENCE", 0.5)
+HAND_GESTURE_REQUIRE_FRAMES = _env_int_profiled("HAND_GESTURE_REQUIRE_FRAMES", 2)
 
-# Minimum box area (fraction of frame) — extremely tiny detections are noise.
-MIN_BOX_FRAME_FRACTION = 0.0003  # ~276 px at 1280x720
+# Alert configuration (aligned with exam_monitor.py)
+ALERT_CONFIRM_FRAMES = max(1, _env_int("ALERT_CONFIRM_FRAMES", 3))  # Changed from 1 to 3
+OVERLAY_PERSISTENCE_SEC = max(0.0, _env_float("OVERLAY_PERSISTENCE_SEC", 1.5))  # Changed from 0.6 to 1.5
+ALERT_COOLDOWN_SEC = _env_float("ALERT_COOLDOWN_SEC", 3.0)
 
-MEDIAPIPE_REFINE_LANDMARKS = os.environ.get("MEDIAPIPE_REFINE_LANDMARKS", "1").lower() in ("1", "true", "yes", "on")
+# ---------------------------------------------------------------------------
+# Detection classes
+# ---------------------------------------------------------------------------
 
-# Per-class confidence floors — detections below these are always discarded,
-# *regardless* of the PHONE_SEARCH_CONF passed to YOLO.
-CLASS_MIN_CONF = {
-    'phone': 0.30,
-    'watch': 0.25,
-    'paper': 0.30,
-    'person': 0.25,
-    'head': 0.25,
-    'hand gesture': 0.20,
+@dataclass
+class DetectionRule:
+    reason: str
+    min_conf: float
+    min_area_fraction: float
+    max_area_fraction: float
+    cooldown: float
+
+DETECTION_RULES: Dict[str, DetectionRule] = {
+    "mobile": DetectionRule(
+        reason="PHONE_DETECTED",
+        min_conf=max(GENERAL_DISPLAY_CONF, PHONE_CLASS_MIN_CONF),
+        min_area_fraction=0.00004,
+        max_area_fraction=0.30,
+        cooldown=ALERT_COOLDOWN_SEC,
+    ),
+    "watch": DetectionRule(
+        reason="WATCH_DETECTED",
+        min_conf=max(GENERAL_DISPLAY_CONF, WATCH_CLASS_MIN_CONF),
+        min_area_fraction=0.00004,
+        max_area_fraction=0.30,
+        cooldown=ALERT_COOLDOWN_SEC,
+    ),
+    "paper": DetectionRule(
+        reason="PAPER_PASSING",
+        min_conf=max(GENERAL_DISPLAY_CONF, PAPER_CLASS_MIN_CONF),
+        min_area_fraction=0.00004,
+        max_area_fraction=0.30,
+        cooldown=ALERT_COOLDOWN_SEC,
+    ),
 }
 
-# Keep class order aligned with training labels in best (3).pt.
-ONNX_CLASS_NAMES = ['hand gesture', 'head', 'phone', 'paper', 'person', 'watch']
+# ---------------------------------------------------------------------------
+# Utility functions
+# ---------------------------------------------------------------------------
 
-LOOK_X_THRESHOLD = 0.025
-LOOK_Y_UP_THRESHOLD = 0.03
+def log(message: str) -> None:
+    print(f"[Monitor] {message}", flush=True)
 
-HAND_MOUTH_THRESHOLD = 0.15
-HAND_MOTION_THRESHOLD = 0.005
+def _beep(kind: str):
+    if not _env_bool("SOUND_ENABLED", True):
+        return
+    if winsound is None:
+        return
+    tones = {
+        "mobile": (1200, 150),
+        "watch": (1000, 150),
+        "paper": (900, 150),
+        "generic": (800, 120),
+    }
+    freq, dur = tones.get(kind, tones["generic"])
+    try:
+        winsound.Beep(int(freq), int(dur))
+    except Exception:
+        pass
 
-mp_face_mesh = mp.solutions.face_mesh
-face_mesh = None
-if not DISABLE_MEDIAPIPE:
-    face_mesh = mp_face_mesh.FaceMesh(
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5,
-        refine_landmarks=MEDIAPIPE_REFINE_LANDMARKS,
-        max_num_faces=1
-    )
-
-mp_hands = mp.solutions.hands
-hands = None
-if not DISABLE_MEDIAPIPE:
-    hands = mp_hands.Hands(
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5,
-        max_num_hands=2
-    )
-
-def enhance_frame_clahe(img):
-    """Apply CLAHE contrast enhancement to improve detection of distant/small objects."""
-    if not ENABLE_CLAHE:
-        return img
-    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+def apply_clahe(image: np.ndarray) -> np.ndarray:
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    lab = cv2.cvtColor(image, cv2.COLOR_BGR2LAB)
     l_channel, a_channel, b_channel = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=CLAHE_CLIP_LIMIT, tileGridSize=(CLAHE_TILE_SIZE, CLAHE_TILE_SIZE))
     l_channel = clahe.apply(l_channel)
-    enhanced = cv2.merge([l_channel, a_channel, b_channel])
-    return cv2.cvtColor(enhanced, cv2.COLOR_LAB2BGR)
+    lab = cv2.merge((l_channel, a_channel, b_channel))
+    return cv2.cvtColor(lab, cv2.COLOR_LAB2BGR)
 
+def encode_frame_for_stream(frame: np.ndarray) -> Optional[str]:
+    if frame is None:
+        return None
+    target_w = STREAM_WIDTH or frame.shape[1]
+    target_h = STREAM_HEIGHT or frame.shape[0]
+    if target_w > 0 and target_h > 0 and (frame.shape[1] != target_w or frame.shape[0] != target_h):
+        frame = cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_AREA)
+    encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), STREAM_JPEG_QUALITY]
+    if STREAM_JPEG_OPTIMIZE:
+        encode_params.extend([int(cv2.IMWRITE_JPEG_OPTIMIZE), 1])
+    if STREAM_JPEG_PROGRESSIVE:
+        encode_params.extend([int(cv2.IMWRITE_JPEG_PROGRESSIVE), 1])
+    ok, buffer = cv2.imencode(".jpg", frame, encode_params)
+    if not ok:
+        return None
+    return base64.b64encode(buffer.tobytes()).decode("ascii")
 
-def run_tiled_inference(model, img, conf, iou, imgsz, half, use_tracking):
-    """Run inference on overlapping tiles of the image to detect small/distant objects.
-    
-    Splits the frame into overlapping tiles, runs YOLO on each tile at the
-    full inference resolution, then maps detections back to the original
-    frame coordinates.  Duplicate detections (from overlap regions) are
-    suppressed via NMS.
-    """
-    h, w = img.shape[:2]
-    tile_h, tile_w = h // 2, w // 2
-    overlap_h = int(tile_h * TILE_OVERLAP)
-    overlap_w = int(tile_w * TILE_OVERLAP)
+def emit_frame(frame: np.ndarray, throttle_state: Dict[str, float]) -> None:
+    now = time.time()
+    min_interval = 1.0 / STREAM_TARGET_FPS
+    last_emit = throttle_state.get("last_emit", 0.0)
+    if now - last_emit < min_interval:
+        return
+    frame_payload = encode_frame_for_stream(frame)
+    if not frame_payload:
+        return
+    print(f"FRAME:{frame_payload}", flush=True)
+    throttle_state["last_emit"] = now
 
-    # Define tile regions (y1, y2, x1, x2)
-    tiles = [
-        (0, tile_h + overlap_h, 0, tile_w + overlap_w),                          # top-left
-        (0, tile_h + overlap_h, tile_w - overlap_w, w),                           # top-right
-        (tile_h - overlap_h, h, 0, tile_w + overlap_w),                           # bottom-left
-        (tile_h - overlap_h, h, tile_w - overlap_w, w),                           # bottom-right
-    ]
-
-    all_detections = []  # list of (x1,y1,x2,y2, class_name, conf)
-
-    for (ty1, ty2, tx1, tx2) in tiles:
-        crop = img[ty1:ty2, tx1:tx2]
+def emit_alert(reason: str, bbox: Tuple[float, float, float, float],
+              confidence: float, frame_dims: Tuple[int, int],
+              snapshot_path: Optional[str], timestamp: datetime) -> None:
+    cx = int((bbox[0] + bbox[2]) / 2.0)
+    cy = int((bbox[1] + bbox[3]) / 2.0)
+    frame_w, frame_h = frame_dims
+    filename = ""
+    if snapshot_path:
         try:
-            tile_results = model.predict(
-                crop,
-                conf=conf,
-                iou=iou,
-                imgsz=imgsz,
+            resolved = Path(snapshot_path)
+            if resolved.is_absolute():
+                filename = str(resolved.relative_to(SUSPICIOUS_DIR))
+            else:
+                filename = str(resolved)
+        except Exception:
+            filename = str(snapshot_path)
+        filename = filename.replace("\\", "/")
+    payload = f"ALERT:{reason}|{timestamp.isoformat()}|{filename}|{cx},{cy},{frame_w},{frame_h}"
+    print(payload, flush=True)
+
+def save_evidence(
+    frame: np.ndarray,
+    reason: str,
+    timestamp: datetime,
+    bbox: Optional[Sequence[float]] = None,
+    label: Optional[str] = None,
+    confidence: Optional[float] = None,
+) -> Optional[str]:
+    safe_reason = reason.lower().replace(" ", "_")
+    timestamp = timestamp or datetime.utcnow()
+    ts_label = timestamp.strftime("%Y%m%d-%H%M%S")
+    filename = f"{ts_label}-{safe_reason}.jpg"
+    output_path = SESSION_DIR / filename
+    try:
+        annotated = frame.copy()
+        frame_h, frame_w = annotated.shape[:2]
+        if bbox is not None and len(bbox) >= 4:
+            x1 = int(max(0, min(frame_w - 1, bbox[0])))
+            y1 = int(max(0, min(frame_h - 1, bbox[1])))
+            x2 = int(max(0, min(frame_w - 1, bbox[2])))
+            y2 = int(max(0, min(frame_h - 1, bbox[3])))
+            if x2 > x1 and y2 > y1:
+                box_label = (label or reason).upper()
+                color = (0, 0, 255)  # Red for alerts
+                cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
+                if confidence is not None:
+                    box_caption = f"{box_label} {confidence * 100:.0f}%"
+                else:
+                    box_caption = box_label
+                (text_w, text_h), _ = cv2.getTextSize(box_caption, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
+                text_y = max(text_h + 6, y1 - 8)
+                cv2.rectangle(annotated, (x1, text_y - text_h - 6), (x1 + text_w + 8, text_y + 2), color, -1)
+                cv2.putText(annotated, box_caption, (x1 + 4, text_y - 3), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 2, cv2.LINE_AA)
+
+        alert_banner = f"ALERT: {reason}"
+        ts_caption = timestamp.strftime("%Y-%m-%d %H:%M:%S UTC")
+        cv2.rectangle(annotated, (8, 8), (min(frame_w - 8, 430), 62), (0, 0, 0), -1)
+        cv2.putText(annotated, alert_banner, (14, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv2.LINE_AA)
+        cv2.putText(annotated, ts_caption, (14, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (230, 230, 230), 1, cv2.LINE_AA)
+
+        cv2.imwrite(str(output_path), annotated)
+        return str(output_path)
+    except Exception as exc:
+        log(f"Failed to write evidence frame: {exc}")
+        return None
+
+# ---------------------------------------------------------------------------
+# Violation Tracker (from exam_monitor.py)
+# ---------------------------------------------------------------------------
+
+class ViolationTracker:
+    def __init__(self, cooldown: float = 3.0):
+        self.cooldown = cooldown
+        self.counts = {
+            "paper_swap": 0,
+            "mobile": 0,
+            "watch": 0,
+            "head_turn": 0,
+            "head_down": 0,
+            "hand_signal": 0,
+        }
+        self._last_alert = {}
+
+    def record(self, violation: str) -> bool:
+        now = time.time()
+        if now - self._last_alert.get(violation, 0) >= self.cooldown:
+            # Initialize count if this is a new violation type
+            if violation not in self.counts:
+                self.counts[violation] = 0
+            self.counts[violation] += 1
+            self._last_alert[violation] = now
+            log(f"VIOLATION: {violation} (total: {self.counts[violation]})")
+            return True
+        return False
+
+# ---------------------------------------------------------------------------
+# MediaPipe Hand and Face Movement Detector (from exam_monitor.py)
+# ---------------------------------------------------------------------------
+
+class HandFaceMovementDetector:
+    def __init__(self):
+        # Detection thresholds
+        self.YAW_THRESHOLD = 70  # degrees - head turn left/right
+        self.PITCH_DOWN_THRESH = -10  # degrees - head looking down
+        self.ALERT_THRESHOLD = 30  # Risk score threshold
+        self.ALERT_COOLDOWN = 2.0  # seconds between alerts
+        
+        # Risk weights
+        self.RISK_WEIGHTS = {
+            "head_turn": 50,
+            "head_down": 50,
+            "hand_signal": 100,
+        }
+        
+        # Suspicious gestures
+        self.SUSPICIOUS_GESTURES = {"1", "2", "3", "4", "5", "high_five"}
+        
+        # Finger landmarks
+        self.FINGER_TIPS = [4, 8, 12, 16, 20]
+        self.FINGER_PIPS = [3, 6, 10, 14, 18]
+        self.FINGER_MCPS = [2, 5, 9, 13, 17]
+        
+        # Initialize MediaPipe
+        self.face_mesh = None
+        self.hands_sol = None
+        if mp is not None:
+            self.face_mesh = mp.solutions.face_mesh.FaceMesh(
+                max_num_faces=4,
+                refine_landmarks=True,
+                min_detection_confidence=0.4,
+                min_tracking_confidence=0.4
+            )
+            self.hands_sol = mp.solutions.hands.Hands(
+                max_num_hands=8,
+                model_complexity=1,
+                min_detection_confidence=0.4,
+                min_tracking_confidence=0.4
+            )
+        
+        # Student tracking
+        self.students = {}
+        self.gesture_tracker = {}
+        self.last_alert = {}
+        
+    def estimate_head_pose(self, landmarks, w, h, student_data):
+        """Estimate yaw (left/right) and pitch (up/down) from face mesh."""
+        nose_tip = landmarks[1]
+        left_eye = landmarks[33]
+        right_eye = landmarks[263]
+        chin = landmarks[152]
+        forehead = landmarks[10]
+
+        # Yaw: asymmetry of eye distances from nose
+        l_dist = abs(nose_tip.x - left_eye.x)
+        r_dist = abs(nose_tip.x - right_eye.x)
+        total = l_dist + r_dist
+        yaw = ((l_dist - r_dist) / total * 90) if total > 0.01 else 0.0
+
+        # Pitch: nose position relative to eye-chin axis
+        eye_mid_y = (left_eye.y + right_eye.y) / 2
+        face_h = abs(chin.y - forehead.y)
+        pitch = ((nose_tip.y - eye_mid_y) / face_h - 0.3) * -120 if face_h > 0.05 else 0.0
+
+        # Smooth using student-specific buffers
+        if "yaw_smooth" not in student_data:
+            student_data["yaw_smooth"] = deque(maxlen=6)
+            student_data["pitch_smooth"] = deque(maxlen=6)
+        
+        student_data["yaw_smooth"].append(yaw)
+        student_data["pitch_smooth"].append(pitch)
+        yaw_s = np.mean(student_data["yaw_smooth"])
+        pitch_s = np.mean(student_data["pitch_smooth"])
+
+        return float(yaw_s), float(pitch_s)
+    
+    def classify_gesture(self, lm):
+        """Classify hand gesture - counts extended fingers."""
+        extended = []
+        for i, (tip, pip, mcp) in enumerate(zip(self.FINGER_TIPS, self.FINGER_PIPS, self.FINGER_MCPS)):
+            if i == 0:  # thumb: use x distance
+                extended.append(abs(lm[tip].x - lm[mcp].x) > 0.04)
+            else:
+                extended.append(lm[tip].y < lm[pip].y)
+
+        # Count extended fingers (excluding thumb for counting)
+        finger_count = sum(extended[1:])
+        
+        if finger_count == 0:
+            return "closed"
+        elif finger_count == 1:
+            return "1"
+        elif finger_count == 2:
+            return "2"
+        elif finger_count == 3:
+            return "3"
+        elif finger_count == 4:
+            return "4"
+        elif finger_count >= 5:
+            return "5"
+        
+        return "unknown"
+    
+    def is_confident_counting_gesture(self, gesture_type, student_id):
+        """Determine if counting gesture is deliberate and confident."""
+        if gesture_type not in {"1", "2", "3", "4", "5"}:
+            if student_id in self.gesture_tracker:
+                self.gesture_tracker[student_id]["gesture"] = "none"
+                self.gesture_tracker[student_id]["frames"] = 0
+            return False
+        
+        if student_id not in self.gesture_tracker:
+            self.gesture_tracker[student_id] = {"gesture": "none", "frames": 0}
+        
+        tracker = self.gesture_tracker[student_id]
+        
+        if tracker.get("gesture") != gesture_type:
+            tracker["gesture"] = gesture_type
+            tracker["frames"] = 1
+            return False
+        
+        tracker["frames"] = tracker.get("frames", 0) + 1
+        return tracker["frames"] >= HAND_GESTURE_REQUIRE_FRAMES
+    
+    def match_hands_to_student(self, hand_multi, face_lms, w, h):
+        """Match hands to a specific student based on proximity to their face."""
+        if not face_lms or not hand_multi:
+            return []
+        
+        face_x = np.mean([lm.x for lm in face_lms])
+        face_y = np.mean([lm.y for lm in face_lms])
+        
+        matched_hands = []
+        for hand in hand_multi:
+            wrist = hand[0]
+            if abs(wrist.x - face_x) < 0.3:
+                matched_hands.append(hand)
+        
+        return matched_hands
+    
+    def detect(self, frame_bgr):
+        """Main detection method - returns violations and overlay data."""
+        if self.face_mesh is None or self.hands_sol is None:
+            return [], []
+        
+        h, w = frame_bgr.shape[:2]
+        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        rgb.flags.writeable = False
+
+        face_results = self.face_mesh.process(rgb)
+        hand_results = self.hands_sol.process(rgb)
+
+        rgb.flags.writeable = True
+
+        # Get detected faces and hands
+        face_lms_list = [lm.landmark for lm in face_results.multi_face_landmarks] \
+                        if face_results.multi_face_landmarks else []
+        hand_multi = [h_lm.landmark for h_lm in hand_results.multi_hand_landmarks] \
+                     if hand_results.multi_hand_landmarks else []
+
+        violations = []
+        overlay_data = []
+        
+        # Process each detected face
+        for face_idx, face_lms in enumerate(face_lms_list):
+            student_id = f"student_{face_idx}"
+            
+            if student_id not in self.students:
+                self.students[student_id] = {
+                    "risk_score": 0.0,
+                    "flags": {k: False for k in self.RISK_WEIGHTS},
+                    "head_yaw": 0.0,
+                    "head_pitch": 0.0,
+                    "gesture": "none",
+                    "last_alert": 0.0,
+                }
+            
+            student = self.students[student_id]
+            flags = {k: False for k in self.RISK_WEIGHTS}
+            
+            # Head pose detection
+            yaw, pitch = self.estimate_head_pose(face_lms, w, h, student)
+            student["head_yaw"] = yaw
+            student["head_pitch"] = pitch
+            
+            flags["head_turn"] = abs(yaw) > self.YAW_THRESHOLD
+            flags["head_down"] = pitch < self.PITCH_DOWN_THRESH
+            
+            # Hand detection - show all detected hands
+            if hand_multi:
+                # First try to match hands to students for gesture analysis
+                hands_for_student = self.match_hands_to_student(hand_multi, face_lms, w, h)
+                
+                if hands_for_student:
+                    gestures = [self.classify_gesture(lm) for lm in hands_for_student]
+                    gesture = gestures[0] if gestures else "none"
+                    student["gesture"] = gesture
+                    
+                    # Check for suspicious gestures
+                    for hand_idx, (gesture_type, hand_lms) in enumerate(zip(gestures, hands_for_student)):
+                        if self.is_confident_counting_gesture(gesture_type, student_id):
+                            flags["hand_signal"] = True
+                            break
+                
+                # Show ALL detected hands (not just matched ones) for better visualization
+                for hand_idx, hand_lms in enumerate(hand_multi):
+                    gesture = "none"
+                    if hands_for_student and hand_lms in hands_for_student:
+                        matched_idx = hands_for_student.index(hand_lms)
+                        if matched_idx < len([g for g in [self.classify_gesture(lm) for lm in hands_for_student] if g != "none"]):
+                            gesture = [g for g in [self.classify_gesture(lm) for lm in hands_for_student] if g != "none"][matched_idx]
+                    
+                    overlay_data.append({
+                        "type": "hands",
+                        "landmarks": [hand_lms],
+                        "gesture": gesture
+                    })
+            
+            # Update student state
+            student["flags"] = flags
+            
+            # Calculate risk score
+            raw = sum(self.RISK_WEIGHTS[k] for k, v in flags.items() if v)
+            raw = min(raw, 100)
+            student["risk_score"] = raw
+            
+            # Check for violations
+            now = time.time()
+            if student["risk_score"] >= self.ALERT_THRESHOLD and now - student.get("last_alert", 0) > self.ALERT_COOLDOWN:
+                active_flags = [k for k, v in flags.items() if v]
+                
+                for flag in active_flags:
+                    if flag == "head_turn":
+                        direction = "RIGHT" if yaw > 0 else "LEFT"
+                        violations.append({
+                            "type": "head_turn",
+                            "description": f"Head turned {direction} ({yaw:.1f}°)",
+                            "student_id": student_id,
+                            "confidence": student["risk_score"] / 100.0
+                        })
+                    elif flag == "head_down":
+                        violations.append({
+                            "type": "head_down", 
+                            "description": f"Looking down (pitch {pitch:.1f}°)",
+                            "student_id": student_id,
+                            "confidence": student["risk_score"] / 100.0
+                        })
+                    elif flag == "hand_signal":
+                        violations.append({
+                            "type": "hand_signal",
+                            "description": f"Suspicious hand gesture: {gesture}",
+                            "student_id": student_id,
+                            "confidence": student["risk_score"] / 100.0
+                        })
+                
+                student["last_alert"] = now
+            
+            overlay_data.append({
+                "type": "face",
+                "landmarks": face_lms,
+                "student_id": student_id,
+                "yaw": yaw,
+                "pitch": pitch,
+                "flags": flags
+            })
+        
+        return violations, overlay_data
+
+    def draw_overlay(self, frame, overlay_data):
+        """Draw face and hand overlays on frame."""
+        h, w = frame.shape[:2]
+        
+        for data in overlay_data:
+            if data["type"] == "face":
+                self._draw_face_overlay(frame, data, w, h)
+            elif data["type"] == "hands":
+                self._draw_hand_overlay(frame, data, w, h)
+    
+    def _draw_face_overlay(self, frame, data, w, h):
+        """Draw face detection overlay."""
+        face_lms = data["landmarks"]
+        student_id = data["student_id"]
+        yaw = data["yaw"]
+        pitch = data["pitch"]
+        flags = data["flags"]
+        
+        # Color based on detection status
+        color = (0, 0, 255) if (abs(yaw) > self.YAW_THRESHOLD or pitch < self.PITCH_DOWN_THRESH) else (0, 255, 255)
+        
+        # Key landmark dots
+        key_pts = [1, 33, 263, 152, 10, 61, 291, 4]
+        for i in key_pts:
+            p = face_lms[i]
+            px, py = int(p.x * w), int(p.y * h)
+            cv2.circle(frame, (px, py), 3, color, -1)
+        
+        # Gaze direction arrow from nose
+        nose = face_lms[1]
+        nx, ny = int(nose.x * w), int(nose.y * h)
+        dx = int(np.sin(np.radians(yaw)) * 60)
+        dy = int(-np.sin(np.radians(pitch)) * 60)
+        cv2.arrowedLine(frame, (nx, ny), (nx + dx, ny + dy), color, 2, tipLength=0.3)
+        
+        # Face bounding box
+        xs = [lm.x for lm in face_lms]
+        ys = [lm.y for lm in face_lms]
+        x1 = max(0, int(min(xs)*w) - 14)
+        y1 = max(0, int(min(ys)*h) - 14)
+        x2 = min(w, int(max(xs)*w) + 14)
+        y2 = min(h, int(max(ys)*h) + 14)
+        
+        # Draw dashed rectangle
+        self._draw_dashed_rect(frame, x1, y1, x2, y2, color, 1)
+        
+        # Draw student ID and status
+        status_text = f"{student_id.upper()}"
+        if flags.get("head_turn"):
+            status_text += " TURN"
+        if flags.get("head_down"):
+            status_text += " DOWN"
+        
+        cv2.putText(frame, status_text, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+    
+    def _draw_hand_overlay(self, frame, data, w, h):
+        """Draw hand detection overlay."""
+        hand_multi = data["landmarks"]
+        gesture = data["gesture"]
+        
+        CONNECTIONS = [
+            (0,1),(1,2),(2,3),(3,4),
+            (0,5),(5,6),(6,7),(7,8),
+            (0,9),(9,10),(10,11),(11,12),
+            (0,13),(13,14),(14,15),(15,16),
+            (0,17),(17,18),(18,19),(19,20),
+            (5,9),(9,13),(13,17)
+        ]
+        
+        for lm in hand_multi:
+            pts = [(int(p.x*w), int(p.y*h)) for p in lm]
+            for a, b in CONNECTIONS:
+                cv2.line(frame, pts[a], pts[b], (0, 165, 255), 1)
+            for i, pt in enumerate(pts):
+                r = 5 if i == 0 else 3
+                cv2.circle(frame, pt, r, (255, 255, 255) if i == 0 else (0, 165, 255), -1)
+        
+        # Draw gesture text
+        if gesture != "none" and gesture != "closed":
+            cv2.putText(frame, f"Gesture: {gesture}", (10, h - 100), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv2.LINE_AA)
+    
+    def _draw_dashed_rect(self, img, x1, y1, x2, y2, color, thickness, gap=10):
+        """Draw dashed rectangle."""
+        for side in [(x1,y1,x2,y1),(x2,y1,x2,y2),(x2,y2,x1,y2),(x1,y2,x1,y1)]:
+            ax,ay,bx,by = side
+            length = int(np.hypot(bx-ax, by-ay))
+            for s in range(0, length, gap*2):
+                e = min(s+gap, length)
+                t = s/length; t2 = e/length
+                cv2.line(img,
+                         (int(ax+t*(bx-ax)),  int(ay+t*(by-ay))),
+                         (int(ax+t2*(bx-ax)), int(ay+t2*(by-ay))),
+                         color, thickness)
+
+# ---------------------------------------------------------------------------
+# YOLO-World Detector (enhanced from both systems)
+# ---------------------------------------------------------------------------
+
+class YOLOWorldDetector:
+    MOBILE_CLASSES = {
+        "mobile phone", "cell phone", "cellphone", "phone", "smartphone", "smart phone",
+        "mobile", "mobile device", "cell phone in hand", "phone under desk",
+        "phone between legs", "phone in lap", "phone on lap", "phone on desk",
+        "phone on table", "phone lying down", "phone laying down", "phone face up",
+        "phone face down", "lying smartphone", "flat smartphone",
+    }
+    WATCH_CLASSES = {"wristwatch", "smartwatch", "analog watch", "wrist watch"}
+    PAPER_CLASSES = {
+        "paper", "sheet of paper", "notebook", "cheat sheet", "document",
+        "book", "textbook", "printed paper", "card", "id card", "exam paper",
+        "answer sheet", "question paper",
+    }
+
+    def __init__(self, model_path: str, prompts: Sequence[str]):
+        resolved_path = Path(model_path)
+        if not resolved_path.is_absolute():
+            resolved_path = BASE_DIR / resolved_path
+        fallback_path = BASE_DIR / "yolov8s-worldv2.pt"
+        if not resolved_path.exists():
+            if fallback_path.exists() and resolved_path != fallback_path:
+                log(f"Requested YOLO model '{resolved_path.name}' not found. Falling back to '{fallback_path.name}'.")
+                resolved_path = fallback_path
+            else:
+                raise FileNotFoundError(f"YOLO model not found: {resolved_path}")
+        self.model_path = str(resolved_path)
+        self.prompts = [p.strip() for p in prompts if p.strip()]
+        self.device = YOLO_DEVICE_PREF or "cpu"
+        
+        log(f"Loading YOLO-World model: {self.model_path} (device={self.device})")
+        self.model = YOLO(self.model_path)
+        if hasattr(self.model, "set_classes"):
+            self.model.set_classes(self.prompts)
+        else:
+            self.model.model.names = {idx: name for idx, name in enumerate(self.prompts)}
+
+    def detect(self, frame: np.ndarray) -> List[Dict[str, object]]:
+        try:
+            results = self.model.predict(
+                source=frame,
+                imgsz=YOLO_IMAGE_SIZE,
+                conf=MODEL_INFER_CONF,
                 max_det=YOLO_MAX_DETECTIONS,
                 verbose=False,
-                half=half
+                device=self.device,
             )
-        except Exception:
-            continue
-        if tile_results[0].boxes:
-            for box in tile_results[0].boxes:
-                bx1, by1, bx2, by2 = map(int, box.xyxy[0])
-                cls_id = int(box.cls[0])
-                raw_conf = float(box.conf[0]) * TILE_CONF_BOOST
-                name = model.names[cls_id]
-                # Per-class confidence floor for tile detections
-                tile_class_min = CLASS_MIN_CONF.get(name.lower(), GENERAL_DISPLAY_CONF)
-                if raw_conf < tile_class_min:
-                    continue
-                # Map back to original frame coordinates
-                all_detections.append((bx1 + tx1, by1 + ty1, bx2 + tx1, by2 + ty1, name, raw_conf))
-
-    # Simple NMS across tiles: remove duplicates with high IoU
-    if not all_detections:
-        return []
-    
-    keep = []
-    used = [False] * len(all_detections)
-    for i in range(len(all_detections)):
-        if used[i]:
-            continue
-        best = all_detections[i]
-        for j in range(i + 1, len(all_detections)):
-            if used[j]:
-                continue
-            # Check if same class and overlapping
-            if all_detections[i][4] != all_detections[j][4]:
-                continue
-            ix1 = max(all_detections[i][0], all_detections[j][0])
-            iy1 = max(all_detections[i][1], all_detections[j][1])
-            ix2 = min(all_detections[i][2], all_detections[j][2])
-            iy2 = min(all_detections[i][3], all_detections[j][3])
-            inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
-            area_a = (all_detections[i][2] - all_detections[i][0]) * (all_detections[i][3] - all_detections[i][1])
-            area_b = (all_detections[j][2] - all_detections[j][0]) * (all_detections[j][3] - all_detections[j][1])
-            union = area_a + area_b - inter
-            if union > 0 and inter / union > 0.4:
-                used[j] = True
-                if all_detections[j][5] > best[5]:
-                    best = all_detections[j]
-        keep.append(best)
-        used[i] = True
-    return keep
-
-
-def letterbox(image, new_shape=640, color=(114, 114, 114)):
-    """Resize and pad image while preserving aspect ratio."""
-    shape = image.shape[:2]  # (h, w)
-    if isinstance(new_shape, int):
-        new_shape = (new_shape, new_shape)
-
-    r = min(new_shape[0] / shape[0], new_shape[1] / shape[1])
-    new_unpad = (int(round(shape[1] * r)), int(round(shape[0] * r)))
-    dw = (new_shape[1] - new_unpad[0]) / 2
-    dh = (new_shape[0] - new_unpad[1]) / 2
-
-    if shape[::-1] != new_unpad:
-        image = cv2.resize(image, new_unpad, interpolation=cv2.INTER_LINEAR)
-
-    top, bottom = int(round(dh - 0.1)), int(round(dh + 0.1))
-    left, right = int(round(dw - 0.1)), int(round(dw + 0.1))
-    image = cv2.copyMakeBorder(image, top, bottom, left, right, cv2.BORDER_CONSTANT, value=color)
-    return image, r, dw, dh
-
-
-def compute_iou(box_a, box_b):
-    ax1, ay1, ax2, ay2 = box_a
-    bx1, by1, bx2, by2 = box_b
-    ix1 = max(ax1, bx1)
-    iy1 = max(ay1, by1)
-    ix2 = min(ax2, bx2)
-    iy2 = min(ay2, by2)
-    inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
-    area_a = max(0, ax2 - ax1) * max(0, ay2 - ay1)
-    area_b = max(0, bx2 - bx1) * max(0, by2 - by1)
-    union = area_a + area_b - inter
-    return (inter / union) if union > 0 else 0.0
-
-
-def phone_has_person_context(phone_box, person_boxes, frame_w, frame_h):
-    """Validate that a phone-like box is spatially consistent with a person.
-
-    This suppresses common background false positives (e.g., wall patterns) by
-    requiring the candidate phone to be inside or near at least one person box.
-    """
-    if not person_boxes:
-        return False
-
-    x1, y1, x2, y2 = phone_box
-    cx = (x1 + x2) // 2
-    cy = (y1 + y2) // 2
-
-    for (px1, py1, px2, py2) in person_boxes:
-        pw = max(1, px2 - px1)
-        ph = max(1, py2 - py1)
-        expand_x = int(pw * PHONE_PERSON_EXPAND_RATIO)
-        expand_y = int(ph * PHONE_PERSON_EXPAND_RATIO)
-
-        ex1 = max(0, px1 - expand_x)
-        ey1 = max(0, py1 - expand_y)
-        ex2 = min(frame_w - 1, px2 + expand_x)
-        ey2 = min(frame_h - 1, py2 + expand_y)
-
-        # Accept if phone center sits in expanded person region.
-        if ex1 <= cx <= ex2 and ey1 <= cy <= ey2:
-            return True
-
-        # Also accept small overlap with expanded person region.
-        iou = compute_iou((x1, y1, x2, y2), (ex1, ey1, ex2, ey2))
-        if iou > 0.005:
-            return True
-
-    return False
-
-
-def class_aware_nms(detections, iou_threshold=0.45):
-    """Run simple class-aware NMS over decoded ONNX detections."""
-    kept = []
-    by_class = {}
-    for det in detections:
-        by_class.setdefault(det[4], []).append(det)
-
-    for _, class_dets in by_class.items():
-        class_dets.sort(key=lambda d: d[5], reverse=True)
-        accepted = []
-        for det in class_dets:
-            box_det = det[:4]
-            if all(compute_iou(box_det, keep_det[:4]) <= iou_threshold for keep_det in accepted):
-                accepted.append(det)
-        kept.extend(accepted)
-
-    return kept
-
-
-def decode_onnx_predictions(raw_output, original_shape, ratio, dw, dh, conf_threshold=0.2, iou_threshold=0.45):
-    """Decode YOLO ONNX output to (x1,y1,x2,y2,label,conf,track_id) tuples."""
-    if raw_output is None:
-        return []
-
-    pred = raw_output
-
-    # Ultralytics ONNX with built-in NMS commonly returns [1, max_det, 6]
-    # where columns are [x1, y1, x2, y2, conf, class_id].
-    if pred.ndim == 3 and pred.shape[-1] == 6:
-        pred = pred[0]
-        h, w = original_shape[:2]
-        detections = []
-        for row in pred:
-            x1, y1, x2, y2, conf, class_id = row.tolist()
-            conf = float(conf)
-            if conf < conf_threshold:
-                continue
-
-            class_id = int(class_id)
-            class_name = ONNX_CLASS_NAMES[class_id] if 0 <= class_id < len(ONNX_CLASS_NAMES) else f'class_{class_id}'
-            class_name = class_name.lower()
-
-            # Keep only classes relevant for current monitoring logic.
-            if class_name not in OPERATIONAL_CLASSES:
-                continue
-
-            # Convert from letterboxed model coordinates back to source image coords.
-            x1 = (x1 - dw) / ratio
-            y1 = (y1 - dh) / ratio
-            x2 = (x2 - dw) / ratio
-            y2 = (y2 - dh) / ratio
-
-            x1 = int(max(0, min(w - 1, x1)))
-            y1 = int(max(0, min(h - 1, y1)))
-            x2 = int(max(0, min(w - 1, x2)))
-            y2 = int(max(0, min(h - 1, y2)))
-            if x2 <= x1 or y2 <= y1:
-                continue
-
-            detections.append((x1, y1, x2, y2, class_name, conf, -1))
-
-        # Output is already NMS-ed by export path, but a light class-aware pass is safe.
-        return class_aware_nms(detections, iou_threshold=iou_threshold)
-
-    if pred.ndim == 3:
-        pred = pred[0]
-        if pred.shape[0] < pred.shape[1]:
-            pred = pred.T
-    elif pred.ndim != 2:
-        return []
-
-    if pred.shape[1] < 5:
-        return []
-
-    boxes = pred[:, :4]
-    cls_scores = pred[:, 4:]
-    if cls_scores.size == 0:
-        return []
-
-    class_ids = np.argmax(cls_scores, axis=1)
-    confidences = cls_scores[np.arange(len(cls_scores)), class_ids]
-
-    h, w = original_shape[:2]
-    detections = []
-    for idx, conf in enumerate(confidences):
-        conf = float(conf)
-        if conf < conf_threshold:
-            continue
-
-        cx, cy, bw, bh = boxes[idx]
-        x1 = (cx - bw / 2 - dw) / ratio
-        y1 = (cy - bh / 2 - dh) / ratio
-        x2 = (cx + bw / 2 - dw) / ratio
-        y2 = (cy + bh / 2 - dh) / ratio
-
-        x1 = int(max(0, min(w - 1, x1)))
-        y1 = int(max(0, min(h - 1, y1)))
-        x2 = int(max(0, min(w - 1, x2)))
-        y2 = int(max(0, min(h - 1, y2)))
-        if x2 <= x1 or y2 <= y1:
-            continue
-
-        class_id = int(class_ids[idx])
-        class_name = ONNX_CLASS_NAMES[class_id] if 0 <= class_id < len(ONNX_CLASS_NAMES) else f'class_{class_id}'
-        class_name = class_name.lower()
-        if class_name not in OPERATIONAL_CLASSES:
-            continue
-        detections.append((x1, y1, x2, y2, class_name, conf, -1))
-
-    return class_aware_nms(detections, iou_threshold=iou_threshold)
-
-
-def run_onnx_inference(session, input_name, output_names, image, imgsz, conf, iou):
-    """Run one ONNX inference step and decode to common detection tuple format."""
-    padded, ratio, dw, dh = letterbox(image, new_shape=imgsz)
-    rgb = cv2.cvtColor(padded, cv2.COLOR_BGR2RGB)
-    tensor = rgb.astype(np.float32) / 255.0
-    tensor = np.transpose(tensor, (2, 0, 1))[None, ...]
-
-    outputs = session.run(output_names, {input_name: tensor})
-    if not outputs:
-        return []
-    return decode_onnx_predictions(outputs[0], image.shape, ratio, dw, dh, conf_threshold=conf, iou_threshold=iou)
-
-
-def emit(msg):
-    print(msg)
-    sys.stdout.flush()
-
-def emit_frame(img):
-    """Emit frame as base64 for web streaming"""
-    try:
-        small_img = cv2.resize(img, (STREAM_WIDTH, STREAM_HEIGHT))
-        _, buffer = cv2.imencode('.jpg', small_img, [cv2.IMWRITE_JPEG_QUALITY, STREAM_JPEG_QUALITY])
-        jpg_as_text = base64.b64encode(buffer).decode()
-        print(f"FRAME:{jpg_as_text}")
-        sys.stdout.flush()
-    except Exception as e:
-        print(f"FRAME_ERROR:{str(e)}")
-        sys.stdout.flush()
-
-
-def write_alert_image_async(image, filename):
-    """Write alert image in background to avoid blocking inference/stream loop."""
-    try:
-        cv2.imwrite(filename, image)
-    except Exception as exc:
-        emit(f"ALERT_WRITE_ERROR:{exc}")
-
-def save_alert(img, reason, cooldown_state, bbox_center=None):
-    """Save an alert image and emit an ALERT line.
-
-    Args:
-        img: The frame image.
-        reason: Alert reason string (e.g. PHONE_DETECTED).
-        cooldown_state: Dict used to maintain per-alert cooldown timestamps.
-        bbox_center: Optional tuple (cx, cy) of the detection center in *pixel*
-                     coordinates of the original frame.  When provided the ALERT
-                     line includes the coordinates so the backend can map the
-                     detection to the nearest student in the seating plan.
-    """
-    current_time = time.time()
-    if not SAVE_ALERTS:
-        return False
-
-    cooldown_key = reason
-    if bbox_center:
-        cx, cy = bbox_center
-        # Spatial bucket allows concurrent alerts for different students/areas
-        # while still suppressing repetitive spam from same region.
-        bucket_x = cx // 160
-        bucket_y = cy // 160
-        cooldown_key = f"{reason}:{bucket_x}:{bucket_y}"
-
-    last_time = cooldown_state.get(cooldown_key, 0)
-    if current_time - last_time > ALERT_COOLDOWN:
-        now = datetime.now()
-        session_folder = os.environ.get("EXAM_SESSION_FOLDER")
-        date_folder = now.strftime("%Y-%m-%d")
-        target_dir = os.path.join(output_folder, session_folder or date_folder)
-        os.makedirs(target_dir, exist_ok=True)
-        timestamp = now.strftime("%Y%m%d_%H%M%S")
-        filename = os.path.join(target_dir, f"ALERT_{reason}_{timestamp}.jpg")
-        threading.Thread(
-            target=write_alert_image_async,
-            args=(img.copy(), filename),
-            daemon=True,
-        ).start()
-        # Extended ALERT format includes bounding-box centre + frame size so the
-        # backend can resolve which student/seat the detection belongs to.
-        if bbox_center:
-            cx, cy = bbox_center
-            h, w = img.shape[:2]
-            emit(f"ALERT:{reason}:{timestamp}:{filename}:{cx},{cy},{w},{h}")
-        else:
-            emit(f"ALERT:{reason}:{timestamp}:{filename}")
-        cooldown_state[cooldown_key] = current_time
-        return True
-    return False
-
-def get_head_direction_simple(landmarks):
-    left_eye_x = landmarks[33].x
-    right_eye_x = landmarks[263].x
-    nose_x = landmarks[1].x
-    nose_y = landmarks[1].y
-    eye_center_x = (left_eye_x + right_eye_x) / 2
-    offset_x = nose_x - eye_center_x
-    direction = ""
-    if offset_x > LOOK_X_THRESHOLD:
-        direction = "RIGHT"
-    elif offset_x < -LOOK_X_THRESHOLD:
-        direction = "LEFT"
-    return direction, (nose_x, nose_y)
-
-def emit_runtime_versions():
-    torch_version = getattr(torch, "__version__", "unknown")
-    ultralytics_version = "unknown"
-    try:
-        import ultralytics
-        ultralytics_version = getattr(ultralytics, "__version__", "unknown")
-    except Exception:
-        pass
-    emit(f"Runtime versions -> torch: {torch_version}, ultralytics: {ultralytics_version}")
-    if str(torch_version).startswith("2.6") and str(ultralytics_version).startswith("8.0."):
-        emit("Warning: torch 2.6 + ultralytics 8.0.x may require trusted fallback loading for older .pt checkpoints")
-
-def configure_torch_safe_globals():
-    try:
-        add_safe_globals = getattr(torch.serialization, "add_safe_globals", None)
-        if not callable(add_safe_globals):
-            return
-        from ultralytics.nn.tasks import DetectionModel
-        add_safe_globals([DetectionModel])
-        emit("Configured torch safe globals for Ultralytics DetectionModel")
-    except Exception as exc:
-        emit(f"Warning: could not configure torch safe globals: {exc}")
-
-def load_yolo_model_with_compat(weights_path):
-    try:
-        return YOLO(weights_path)
-    except pickle.UnpicklingError as exc:
-        message = str(exc)
-        if "Weights only load failed" not in message:
-            raise
-        emit("Detected PyTorch weights_only restriction. Retrying with trusted legacy load mode...")
-        original_torch_load = torch.load
-        try:
-            def trusted_torch_load(*args, **kwargs):
-                if "weights_only" not in kwargs:
-                    kwargs["weights_only"] = False
-                return original_torch_load(*args, **kwargs)
-            torch.load = trusted_torch_load
-            return YOLO(weights_path)
-        finally:
-            torch.load = original_torch_load
-
-def select_inference_device():
-    if torch.cuda.is_available():
-        return "cuda", "CUDA"
-    directml_mode = os.environ.get("USE_DIRECTML", "auto").lower()
-    directml_enabled = directml_mode in ("auto", "1", "true", "yes", "on")
-    if directml_enabled and torch_directml is not None:
-        try:
-            return torch_directml.device(), "DirectML"
         except Exception as exc:
-            emit(f"Warning: DirectML available but failed to initialize: {exc}")
-            emit("Falling back to CPU")
-    elif directml_mode in ("0", "false", "no", "off") and torch_directml is not None:
-        emit("DirectML detected but disabled via USE_DIRECTML=0")
-    elif directml_enabled and torch_directml is None:
-        emit("DirectML requested but torch-directml is not installed")
-    return "cpu", "CPU"
-
-def run_system():
-    device, backend = select_inference_device()
-    emit(f"Loading YOLO on {device} ({backend})")
-    emit_runtime_versions()
-    patch_ultralytics_inference_mode()
-    patch_ultralytics_nms_for_directml()
-    configure_torch_safe_globals()
-
-    # Resolve absolute paths to model files regardless of where script is launched.
-    weights_pt_path = os.path.join(os.path.dirname(__file__), "best (3).pt")
-    weights_onnx_path = os.path.join(os.path.dirname(__file__), "best (3).onnx")
-
-    prefer_onnx = USE_ONNX_RUNTIME_DML in ("1", "true", "yes", "on")
-    if USE_ONNX_RUNTIME_DML == "auto":
-        prefer_onnx = backend == "DirectML"
-
-    use_onnx_runtime = False
-    onnx_session = None
-    onnx_input_name = None
-    onnx_output_names = None
-    onnx_input_size = YOLO_IMAGE_SIZE
-    model = None
-
-    if prefer_onnx and ort is None:
-        emit("ONNX Runtime requested but not installed. Falling back to Ultralytics backend.")
-
-    if prefer_onnx and ort is not None:
-        try:
-            if not os.path.exists(weights_onnx_path):
-                emit("ONNX model not found. Exporting from PyTorch checkpoint...")
-                exporter = load_yolo_model_with_compat(weights_pt_path)
-                exporter.export(format='onnx', imgsz=YOLO_IMAGE_SIZE, dynamic=False, simplify=False, opset=12)
-
-            providers = ['CPUExecutionProvider']
-            if backend == "DirectML":
-                providers = ['DmlExecutionProvider', 'CPUExecutionProvider']
-
-            onnx_session = ort.InferenceSession(weights_onnx_path, providers=providers)
-            onnx_input_meta = onnx_session.get_inputs()[0]
-            onnx_input_name = onnx_input_meta.name
-            onnx_output_names = [output.name for output in onnx_session.get_outputs()]
-
-            # Some exported ONNX models are fixed-shape (e.g. 512x512).
-            # Read input tensor shape and use it instead of env YOLO_IMAGE_SIZE.
-            input_shape = onnx_input_meta.shape
-            parsed_h = None
-            parsed_w = None
-            if isinstance(input_shape, (list, tuple)) and len(input_shape) >= 4:
-                if isinstance(input_shape[2], int):
-                    parsed_h = input_shape[2]
-                if isinstance(input_shape[3], int):
-                    parsed_w = input_shape[3]
-
-            if parsed_h and parsed_w and parsed_h > 0 and parsed_w > 0:
-                if parsed_h == parsed_w:
-                    onnx_input_size = parsed_h
-                else:
-                    onnx_input_size = (parsed_h, parsed_w)
-
-            emit(f"Using ONNX input size: {onnx_input_size}")
-            use_onnx_runtime = True
-            emit(f"Using ONNX Runtime backend with providers: {onnx_session.get_providers()}")
-        except Exception as exc:
-            emit(f"Warning: ONNX Runtime init failed, falling back to Ultralytics backend: {exc}")
-
-    if not use_onnx_runtime:
-        model = load_yolo_model_with_compat(weights_pt_path)
-        model.to(device)
-
-    infer_half = backend == "CUDA"
-    using_cpu_fallback = backend == "CPU"
-    # Tracking can be unstable/expensive on DirectML paths; default to predict-only there.
-    force_predict_only = os.environ.get("FORCE_PREDICT_ONLY", "auto").lower()
-    if force_predict_only in ("1", "true", "yes", "on"):
-        use_tracking = False
-    elif force_predict_only in ("0", "false", "no", "off"):
-        use_tracking = True
-    else:
-        use_tracking = (backend == "CUDA") and (not use_onnx_runtime)
-    
-    # Camera probing can delay first frame on some drivers; skip by default.
-    if not SKIP_CAMERA_PROBE:
-        emit("Checking available cameras...")
-        for i in range(3):  # Check first 3 camera indices
-            test_cap = cv2.VideoCapture(i)
-            if test_cap.isOpened():
-                emit(f"Camera {i} is available")
-                test_cap.release()
+            log(f"YOLO inference error: {exc}")
+            return []
+        if not results:
+            return []
+        detections: List[Dict[str, object]] = []
+        boxes = results[0].boxes
+        if boxes is None:
+            return detections
+        for box in boxes:
+            cls_idx = int(box.cls[0]) if box.cls is not None else -1
+            label = self.prompts[cls_idx] if 0 <= cls_idx < len(self.prompts) else str(cls_idx)
+            coords = box.xyxy[0].detach().cpu().numpy().tolist()
+            
+            # Normalize label to category
+            label_lower = label.lower()
+            
+            # Skip only plain hand/face detections - but allow phone in hand, cell phone in hand
+            if label_lower in ["hand", "hands", "finger", "fingers", "face", "head", "person"]:
+                continue
+                
+            if label_lower in self.MOBILE_CLASSES or any(tok in label_lower for tok in ["phone", "smartphone", "cell phone", "cellphone", "mobile"]):
+                category = "mobile"
+            elif label_lower in self.WATCH_CLASSES:
+                category = "watch"
+            elif label_lower in self.PAPER_CLASSES:
+                category = "paper"
             else:
-                emit(f"Camera {i} not available")
-    else:
-        emit("Skipping camera probe for faster startup")
-    
-    cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)  # Use DirectShow on Windows
-    if not cap.isOpened():
-        emit("Error: Could not open camera with DSHOW. Trying backend API...")
-        cap = cv2.VideoCapture(0, cv2.CAP_MSMF)  # Try Media Foundation
-        if not cap.isOpened():
-            emit("Error: Could not open camera. Trying default...")
-            cap = cv2.VideoCapture(0)
-            if not cap.isOpened():
-                emit("Error: Could not open any camera. Please check camera permissions.")
-                return
-    
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, FRAME_WIDTH)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, FRAME_HEIGHT)
-    cap.set(cv2.CAP_PROP_FPS, CAMERA_FPS)
-    cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)
-    try:
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-    except Exception:
-        pass
-    
-    # Warm up camera (short by default for faster first-frame latency)
-    emit("Warming up camera...")
-    for _ in range(CAMERA_WARMUP_FRAMES):
-        cap.read()
-        if CAMERA_WARMUP_DELAY_SEC > 0:
-            time.sleep(CAMERA_WARMUP_DELAY_SEC)
-
-    if POST_CAMERA_INIT_DELAY_SEC > 0:
-        time.sleep(POST_CAMERA_INIT_DELAY_SEC)
-    emit(f"Camera initialized successfully. Resolution: {int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))}x{int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))}")
-    emit("System Active")
-
-    phone_persistence_map = {}
-    phone_no_track_persistence = 0
-    last_no_track_phone_center = None
-    prev_hand_positions = {}
-    alert_cooldowns = {}
-    frame_index = 0
-    cached_face_results = None
-    cached_hand_results = None
-    cached_results = None
-    last_stream_emit_ts = 0.0
-
-    directml_runtime_errors = 0
-    emit(
-        "Performance mode -> "
-        f"yolo_every={YOLO_PROCESS_EVERY_N_FRAMES}, "
-        f"mediapipe_every={'off' if DISABLE_MEDIAPIPE else MEDIAPIPE_PROCESS_EVERY_N_FRAMES}, "
-        f"yolo_imgsz={YOLO_IMAGE_SIZE}, camera_fps={CAMERA_FPS}, stream_fps={STREAM_TARGET_FPS}, "
-        f"tiled={ENABLE_TILED_INFERENCE}, tiled_every={TILED_INFERENCE_EVERY_N}, clahe={ENABLE_CLAHE}, "
-        f"read_latest={CAMERA_READ_LATEST}, buffer_flush={CAMERA_BUFFER_FLUSH}"
-    )
-
-    while True:
-        frame_index += 1
-        should_process_yolo = frame_index % YOLO_PROCESS_EVERY_N_FRAMES == 0
-        should_process_mediapipe = (not DISABLE_MEDIAPIPE) and (frame_index % MEDIAPIPE_PROCESS_EVERY_N_FRAMES == 0)
-
-        if CAMERA_READ_LATEST and CAMERA_BUFFER_FLUSH > 0:
-            for _ in range(CAMERA_BUFFER_FLUSH):
-                if not cap.grab():
+                category = "other"
+            
+            detections.append({
+                "category": category,
+                "label": label_lower,
+                "conf": float(box.conf[0]) if box.conf is not None else 0.0,
+                "bbox": coords,
+            })
+            
+        # Cross-class NMS: Prevent double alerts for the same physical object
+        filtered_detections = []
+        # Bias the NMS slightly so 'mobile' takes precedence if confidences are extremely close
+        # but primarily rely on the raw confidence score.
+        detections.sort(key=lambda x: x['conf'] + (0.05 if x['category'] == 'mobile' else 0), reverse=True)
+        
+        for det in detections:
+            keep = True
+            for kept_det in filtered_detections:
+                boxA = det['bbox']
+                boxB = kept_det['bbox']
+                xA = max(boxA[0], boxB[0])
+                yA = max(boxA[1], boxB[1])
+                xB = min(boxA[2], boxB[2])
+                yB = min(boxA[3], boxB[3])
+                interArea = max(0, xB - xA) * max(0, yB - yA)
+                
+                boxAArea = (boxA[2] - boxA[0]) * (boxA[3] - boxA[1])
+                boxBArea = (boxB[2] - boxB[0]) * (boxB[3] - boxB[1])
+                unionArea = float(boxAArea + boxBArea - interArea)
+                
+                iou = interArea / unionArea if unionArea > 0 else 0
+                
+                if iou > 0.35: # Threshold for classifying as the exact same object
+                    keep = False
                     break
+                    
+            if keep:
+                filtered_detections.append(det)
+                
+        return filtered_detections
 
-        success, img = cap.read()
-        if not success:
-            emit("Camera read failed - retrying...")
-            time.sleep(0.1)
-            continue
-        
-        # Check if frame is valid (not empty/blank)
-        if img is None or img.size == 0:
-            emit("Empty frame received - retrying...")
-            time.sleep(0.1)
-            continue
+# ---------------------------------------------------------------------------
+# Camera management (from original monitor.py)
+# ---------------------------------------------------------------------------
+
+def open_capture() -> Optional[cv2.VideoCapture]:
+    backend_map = {
+        "ffmpeg": cv2.CAP_FFMPEG,
+        "gstreamer": cv2.CAP_GSTREAMER,
+        "dshow": getattr(cv2, "CAP_DSHOW", cv2.CAP_ANY),
+        "msmf": getattr(cv2, "CAP_MSMF", cv2.CAP_ANY),
+        "auto": cv2.CAP_ANY,
+    }
+
+    # Laptop mode should strongly prefer local webcam backends before falling back.
+    if CAMERA_MODE == "laptop" and CAMERA_BACKEND == "auto":
+        backend_candidates: List[Tuple[str, int]] = [
+            ("msmf", backend_map["msmf"]),
+            ("dshow", backend_map["dshow"]),
+            ("auto", backend_map["auto"]),
+        ]
+    else:
+        backend_name = CAMERA_BACKEND.lower()
+        backend_idx = backend_map.get(backend_name, cv2.CAP_ANY)
+        backend_candidates = [(backend_name, backend_idx)]
+
+    for backend_name, backend_idx in backend_candidates:
+        try:
+            cap = cv2.VideoCapture(CAMERA_SOURCE, backend_idx)
+            if not cap.isOpened():
+                continue
             
-        img_rgb = None
-        all_mouth_centers = []
-        current_frame_fingertips = []
-        face_results = None
-        hand_results = None
-
-        if not DISABLE_MEDIAPIPE:
-            if should_process_mediapipe or cached_face_results is None:
-                if img_rgb is None:
-                    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                cached_face_results = face_mesh.process(img_rgb)
-            face_results = cached_face_results
-            if face_results and face_results.multi_face_landmarks:
-                for face_landmarks in face_results.multi_face_landmarks:
-                    direction, nose_coords = get_head_direction_simple(face_landmarks.landmark)
-                    mouth_x = face_landmarks.landmark[13].x
-                    mouth_y = face_landmarks.landmark[13].y
-                    all_mouth_centers.append((mouth_x, mouth_y))
-                    if direction:
-                        nose_px = int(nose_coords[0] * FRAME_WIDTH)
-                        nose_py = int(nose_coords[1] * FRAME_HEIGHT)
-                        save_alert(img, f"HEAD_{direction}", alert_cooldowns, bbox_center=(nose_px, nose_py))
-
-            if should_process_mediapipe or cached_hand_results is None:
-                if img_rgb is None:
-                    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-                cached_hand_results = hands.process(img_rgb)
-            hand_results = cached_hand_results
-
-        current_hand_positions = {}
-        if hand_results and hand_results.multi_hand_landmarks:
-            for i, hand_landmarks in enumerate(hand_results.multi_hand_landmarks):
-                wrist = hand_landmarks.landmark[0]
-                index_tip = hand_landmarks.landmark[8]
-                tip_x, tip_y = int(index_tip.x * FRAME_WIDTH), int(index_tip.y * FRAME_HEIGHT)
-                current_frame_fingertips.append((tip_x, tip_y))
-                current_hand_positions[i] = (wrist.x, wrist.y)
-                motion_score = 0
-                if i in prev_hand_positions:
-                    prev_x, prev_y = prev_hand_positions[i]
-                    motion_score = math.sqrt((wrist.x - prev_x) ** 2 + (wrist.y - prev_y) ** 2)
-                is_near_mouth = False
-                if all_mouth_centers:
-                    for (mouth_x, mouth_y) in all_mouth_centers:
-                        for point in [hand_landmarks.landmark[8], hand_landmarks.landmark[12], hand_landmarks.landmark[4], hand_landmarks.landmark[0]]:
-                            dist = math.sqrt((point.x - mouth_x) ** 2 + (point.y - mouth_y) ** 2)
-                            if dist < HAND_MOUTH_THRESHOLD:
-                                is_near_mouth = True
-                                break
-                        if is_near_mouth:
-                            break
-                if is_near_mouth and motion_score > HAND_MOTION_THRESHOLD:
-                    mp.solutions.drawing_utils.draw_landmarks(img, hand_landmarks, mp_hands.HAND_CONNECTIONS)
-                    hx, hy = int(wrist.x * FRAME_WIDTH), int(wrist.y * FRAME_HEIGHT)
-                    cv2.putText(img, "SUSPICIOUS: HAND NEAR MOUTH", (hx, hy - 40), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                    emit(f"🚨 ALERT: HAND NEAR MOUTH")
-                    save_alert(img, "HAND_MOUTH", alert_cooldowns, bbox_center=(hx, hy))
-        prev_hand_positions = current_hand_positions
-
-        # Apply CLAHE enhancement for better distant object visibility
-        enhanced_img = enhance_frame_clahe(img)
-
-        if should_process_yolo or cached_results is None:
-            if use_onnx_runtime:
-                try:
-                    results = run_onnx_inference(
-                        onnx_session,
-                        onnx_input_name,
-                        onnx_output_names,
-                        enhanced_img,
-                        onnx_input_size,
-                        PHONE_SEARCH_CONF,
-                        0.45,
-                    )
-                    directml_runtime_errors = 0
-                except Exception as exc:
-                    emit(f"ONNX inference error: {exc}")
-                    continue
+            # Apply camera settings
+            cap.set(cv2.CAP_PROP_FPS, MONITOR_CAMERA_FPS)
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, CAMERA_BUFFER_FLUSH)
+            
+            # Warm up camera
+            for _ in range(CAMERA_WARMUP_FRAMES):
+                ret, _ = cap.read()
+                if not ret:
+                    break
+                time.sleep(CAMERA_WARMUP_DELAY_SEC)
+            
+            if ret:
+                log(f"Camera opened successfully with backend '{backend_name}'")
+                return cap
             else:
-                try:
-                    if use_tracking:
-                        results = model.track(
-                            enhanced_img,
-                            persist=True,
-                            conf=PHONE_SEARCH_CONF,
-                            iou=0.45,
-                            imgsz=YOLO_IMAGE_SIZE,
-                            max_det=YOLO_MAX_DETECTIONS,
-                            verbose=False,
-                            half=infer_half
-                        )
-                    else:
-                        results = model.predict(
-                            enhanced_img,
-                            conf=PHONE_SEARCH_CONF,
-                            iou=0.45,
-                            imgsz=YOLO_IMAGE_SIZE,
-                            max_det=YOLO_MAX_DETECTIONS,
-                            verbose=False,
-                            half=infer_half
-                        )
-                    directml_runtime_errors = 0
-                except RuntimeError as exc:
-                    error_text = str(exc)
-                    if "Cannot set version_counter for inference tensor" in error_text:
-                        emit("Detected inference tensor compatibility error. Switching to prediction-only mode...")
-                        use_tracking = False
-                        results = model.predict(
-                            enhanced_img,
-                            conf=PHONE_SEARCH_CONF,
-                            iou=0.45,
-                            imgsz=YOLO_IMAGE_SIZE,
-                            max_det=YOLO_MAX_DETECTIONS,
-                            verbose=False,
-                            half=infer_half
-                        )
-                        directml_runtime_errors = 0
-                    elif "The parameter is incorrect" in error_text and backend == "DirectML" and not using_cpu_fallback:
-                        directml_runtime_errors += 1
-                        emit(
-                            "Detected DirectML runtime compatibility error. "
-                            f"Retrying on DirectML ({directml_runtime_errors}/{DIRECTML_ERROR_BEFORE_CPU_FALLBACK})..."
-                        )
-                        use_tracking = False
-                        model.predictor = None
-                        try:
-                            results = model.predict(
-                                enhanced_img,
-                                conf=PHONE_SEARCH_CONF,
-                                iou=0.45,
-                                imgsz=YOLO_IMAGE_SIZE,
-                                max_det=YOLO_MAX_DETECTIONS,
-                                verbose=False,
-                                half=False
+                cap.release()
+        except Exception as exc:
+            log(f"Failed to open camera with backend '{backend_name}': {exc}")
+            continue
+    
+    log("Failed to open camera with any backend")
+    return None
+
+# ---------------------------------------------------------------------------
+# Main monitoring loop
+# ---------------------------------------------------------------------------
+
+def main():
+    log("Starting integrated exam monitoring system...")
+    
+    # Initialize violation tracker
+    tracker = ViolationTracker(cooldown=ALERT_COOLDOWN_SEC)
+    
+    # Initialize YOLO detector
+    yolo = YOLOWorldDetector(YOLO_MODEL_PATH, YOLO_CLASSES + EXTENDED_YOLO_CLASSES)
+    
+    # Initialize MediaPipe hand/face detector
+    handface_detector = HandFaceMovementDetector()
+    
+    # Open camera
+    cap = open_capture()
+    if cap is None:
+        log("Failed to open camera")
+        return
+    
+    # Post camera initialization delay
+    time.sleep(POST_CAMERA_INIT_DELAY_SEC)
+    
+    # Main loop variables
+    frame_idx = 0
+    last_detections = []
+    last_handface_violations = []
+    
+    # YOLO async threading variables
+    yolo_lock = threading.Lock()
+    yolo_payload = None
+    yolo_running = True
+    
+    def yolo_worker():
+        nonlocal last_detections, yolo_payload, yolo_running
+        while yolo_running:
+            with yolo_lock:
+                frame_local = yolo_payload
+                yolo_payload = None
+            if frame_local is None:
+                time.sleep(0.005)
+                continue
+            try:
+                dets = yolo.detect(frame_local)
+                if dets is not None:
+                    last_detections = dets
+            except Exception as exc:
+                log(f"YOLO predict err: {exc}")
+                time.sleep(0.05)
+
+    yolo_thread = threading.Thread(target=yolo_worker, daemon=True)
+    yolo_thread.start()
+    frame_throttle_state = {}
+    fps = 0.0
+    prev_time = time.time()
+    
+    try:
+        while not stop_event.is_set():
+            ret, frame = cap.read()
+            if not ret:
+                log("Failed to read frame from camera")
+                break
+            
+            # Resize for processing if needed
+            if FORCE_PROCESS_RESIZE:
+                frame = cv2.resize(frame, (PROCESS_WIDTH, PROCESS_HEIGHT))
+            
+            # Apply CLAHE if enabled
+            if ENABLE_CLAHE:
+                frame = apply_clahe(frame)
+            
+            # Calculate FPS
+            now = time.time()
+            dt = now - prev_time
+            if dt > 0:
+                fps = 1.0 / dt
+            prev_time = now
+            
+            frame_idx += 1
+            
+            # YOLO detection (asynchronous trigger)
+            if frame_idx % YOLO_PROCESS_EVERY == 0:
+                with yolo_lock:
+                    if yolo_payload is None:
+                        yolo_payload = frame.copy()
+            
+            # MediaPipe hand/face detection
+            handface_violations = []
+            handface_overlay_data = []
+            if frame_idx % MEDIAPIPE_PROCESS_EVERY == 0:
+                handface_violations, handface_overlay_data = handface_detector.detect(frame)
+                last_handface_violations = handface_violations
+            
+            # Process YOLO detections for alerts
+            for detection in last_detections:
+                category = detection["category"]
+                if category in DETECTION_RULES:
+                    rule = DETECTION_RULES[category]
+                    conf = detection["conf"]
+                    bbox = detection["bbox"]
+                    
+                    if conf >= rule.min_conf:
+                        if tracker.record(category):
+                            # Save evidence and emit alert
+                            timestamp = datetime.now()
+                            snapshot_path = save_evidence(
+                                frame, rule.reason, timestamp, bbox, 
+                                detection["label"], conf
                             )
-                            directml_runtime_errors = 0
-                        except RuntimeError:
-                            if directml_runtime_errors >= DIRECTML_ERROR_BEFORE_CPU_FALLBACK:
-                                emit("DirectML failed repeatedly. Switching YOLO inference to CPU fallback...")
-                                device = "cpu"
-                                backend = "CPU"
-                                using_cpu_fallback = True
-                                model.to(device)
-                                model.predictor = None
-                                infer_half = False
-                                results = model.predict(
-                                    enhanced_img,
-                                    conf=PHONE_SEARCH_CONF,
-                                    iou=0.45,
-                                    imgsz=YOLO_IMAGE_SIZE,
-                                    max_det=YOLO_MAX_DETECTIONS,
-                                    verbose=False,
-                                    half=False
-                                )
-                            else:
-                                continue
-                    else:
-                        raise
-            cached_results = results
-        else:
-            results = cached_results
-
-        all_boxes, phone_candidates, person_boxes = [], [], []
-        frame_area = img.shape[0] * img.shape[1]
-        if use_onnx_runtime:
-            detections = results or []
-            for (x1, y1, x2, y2, raw_name, conf, track_id) in detections:
-                name_lower = raw_name.lower()
-
-                min_conf = CLASS_MIN_CONF.get(name_lower, GENERAL_DISPLAY_CONF)
-                if conf < min_conf:
-                    continue
-
-                box_area = (x2 - x1) * (y2 - y1)
-                if frame_area > 0 and (box_area / frame_area) > MAX_BOX_FRAME_FRACTION:
-                    continue
-                if frame_area > 0 and (box_area / frame_area) < MIN_BOX_FRAME_FRACTION:
-                    continue
-
-                all_boxes.append((x1, y1, x2, y2, raw_name, conf))
-                if 'person' in name_lower:
-                    person_boxes.append((x1, y1, x2, y2))
-                if 'phone' in name_lower or 'mobile' in name_lower:
-                    phone_candidates.append((x1, y1, x2, y2, conf, track_id))
-        elif results[0].boxes:
-            for box in results[0].boxes:
-                x1, y1, x2, y2 = map(int, box.xyxy[0])
-                cls_id = int(box.cls[0])
-                track_id = int(box.id[0]) if box.id is not None else -1
-                raw_name = model.names[cls_id]
-                conf = float(box.conf[0])
-                name_lower = raw_name.lower()
-
-                # --- Per-class confidence floor ---
-                min_conf = CLASS_MIN_CONF.get(name_lower, GENERAL_DISPLAY_CONF)
-                if conf < min_conf:
-                    continue
-
-                # --- Filter out unreasonably large boxes (likely furniture) ---
-                box_area = (x2 - x1) * (y2 - y1)
-                if frame_area > 0 and (box_area / frame_area) > MAX_BOX_FRAME_FRACTION:
-                    continue
-
-                # --- Filter out extremely tiny noise boxes ---
-                if frame_area > 0 and (box_area / frame_area) < MIN_BOX_FRAME_FRACTION:
-                    continue
-
-                all_boxes.append((x1, y1, x2, y2, raw_name, conf))
-                if 'person' in name_lower:
-                    person_boxes.append((x1, y1, x2, y2))
-                if 'phone' in name_lower or 'mobile' in name_lower:
-                    phone_candidates.append((x1, y1, x2, y2, conf, track_id))
-
-        # --- Tiled inference for small/distant objects ---
-        if (not use_onnx_runtime) and ENABLE_TILED_INFERENCE and should_process_yolo and (frame_index % (YOLO_PROCESS_EVERY_N_FRAMES * TILED_INFERENCE_EVERY_N) == 0):
-            tile_detections = run_tiled_inference(
-                model, enhanced_img, conf=PHONE_SEARCH_CONF, iou=0.45,
-                imgsz=YOLO_IMAGE_SIZE, half=infer_half, use_tracking=False
-            )
-            # Merge tile detections that aren't already covered by the full-frame pass
-            for (tx1, ty1, tx2, ty2, tname, tconf) in tile_detections:
-                tname_lower = tname.lower()
-                # Apply same per-class confidence floor
-                tile_min_conf = CLASS_MIN_CONF.get(tname_lower, GENERAL_DISPLAY_CONF)
-                if tconf < tile_min_conf:
-                    continue
-                tile_box_area = (tx2 - tx1) * (ty2 - ty1)
-                if frame_area > 0 and (tile_box_area / frame_area) > MAX_BOX_FRAME_FRACTION:
-                    continue
-                if frame_area > 0 and (tile_box_area / frame_area) < MIN_BOX_FRAME_FRACTION:
-                    continue
-
-                already_found = False
-                for (ex1, ey1, ex2, ey2, ename, econf) in all_boxes:
-                    if tname != ename:
-                        continue
-                    ix1 = max(tx1, ex1)
-                    iy1 = max(ty1, ey1)
-                    ix2 = min(tx2, ex2)
-                    iy2 = min(ty2, ey2)
-                    inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
-                    area_a = (tx2 - tx1) * (ty2 - ty1)
-                    area_b = (ex2 - ex1) * (ey2 - ey1)
-                    union = area_a + area_b - inter
-                    if union > 0 and inter / union > 0.3:
-                        already_found = True
-                        break
-                if not already_found:
-                    all_boxes.append((tx1, ty1, tx2, ty2, tname, tconf))
-                    if 'phone' in tname.lower() or 'mobile' in tname.lower():
-                        phone_candidates.append((tx1, ty1, tx2, ty2, tconf, -1))
-
-        # Draw all detected objects with bounding boxes (only above display threshold)
-        for (x1, y1, x2, y2, label, conf) in all_boxes:
-            # Skip drawing low-confidence detections to reduce visual clutter
-            if conf < GENERAL_DISPLAY_CONF:
-                continue
-            # Color coding: person=cyan, phone=red, watch=green, paper=orange, other=blue
-            if 'person' in label.lower():
-                color = (255, 255, 0)  # Cyan
-                thickness = 2
-            elif 'phone' in label.lower() or 'mobile' in label.lower() or 'cell' in label.lower():
-                color = (0, 0, 255)  # Red
-                thickness = 3
-            elif 'watch' in label.lower():
-                color = (0, 255, 0)  # Green
-                thickness = 3
-            elif 'paper' in label.lower() or 'book' in label.lower():
-                color = (0, 165, 255)  # Orange
-                thickness = 2
-            else:
-                color = (255, 0, 0)  # Blue
-                thickness = 2
+                            emit_alert(rule.reason, bbox, conf, 
+                                     (frame.shape[1], frame.shape[0]), 
+                                     snapshot_path, timestamp)
+                            _beep(category)
             
-            cv2.rectangle(img, (x1, y1), (x2, y2), color, thickness)
-            label_text = f"{label} {int(conf*100)}%"
-            text_size = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 2)[0]
-            cv2.rectangle(img, (x1, y1 - text_size[1] - 8), (x1 + text_size[0] + 4, y1), color, -1)
-            cv2.putText(img, label_text, (x1 + 2, y1 - 5), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 2)
-
-        for (x1, y1, x2, y2, label, conf) in all_boxes:
-            if 'paper' in label.lower():
-                hands_touching_count = 0
-                for (fx, fy) in current_frame_fingertips:
-                    if x1 < fx < x2 and y1 < fy < y2:
-                        hands_touching_count += 1
-                if hands_touching_count >= 2:
-                    paper_cx, paper_cy = (x1 + x2) // 2, (y1 + y2) // 2
-                    save_alert(img, "PAPER_PASSING", alert_cooldowns, bbox_center=(paper_cx, paper_cy))
-        # Watch detection logic
-        for (x1, y1, x2, y2, label, conf) in all_boxes:
-            if 'watch' in label.lower() and conf > WATCH_DISPLAY_CONF:
-                watch_cx, watch_cy = (x1 + x2) // 2, (y1 + y2) // 2
-                emit(f"⌚ ALERT: WATCH DETECTED (confidence: {int(conf*100)}%)")
-                save_alert(img, "WATCH_DETECTED", alert_cooldowns, bbox_center=(watch_cx, watch_cy))
-
-        current_frame_phone_ids = []
-        no_track_phone_seen = False
-        frame_h, frame_w = img.shape[:2]
-        frame_area = max(1, frame_h * frame_w)
-        # Keep old absolute thresholds as floor, but scale for higher resolutions.
-        effective_phone_min_area = max(PHONE_MIN_AREA, int(frame_area * PHONE_MIN_AREA_FRACTION))
-        effective_phone_max_area = max(PHONE_MAX_AREA, int(frame_area * PHONE_MAX_AREA_FRACTION))
-        edge_margin_x = int(frame_w * PHONE_EDGE_MARGIN_FRACTION)
-        edge_margin_y = int(frame_h * PHONE_EDGE_MARGIN_FRACTION)
-        for (x1, y1, x2, y2, conf, track_id) in phone_candidates:
-            w, h = x2 - x1, y2 - y1
-            area = w * h
-            aspect = w / h if h != 0 else 0
-            is_high_conf_phone = conf >= PHONE_HIGH_CONF_OVERRIDE
-
-            # Keep strict area checks for moderate confidence, but allow
-            # very high-confidence phone detections to pass.
-            if (not is_high_conf_phone) and (area < effective_phone_min_area or area > effective_phone_max_area):
-                continue
-            if aspect < PHONE_MIN_ASPECT or aspect > PHONE_MAX_ASPECT:
-                continue
-
-            # Background artifacts near frame borders are frequently false phones.
-            near_edge = (
-                x1 <= edge_margin_x
-                or y1 <= edge_margin_y
-                or x2 >= (frame_w - edge_margin_x)
-                or y2 >= (frame_h - edge_margin_y)
-            )
-            # Keep edge suppression for likely false positives, but do not block
-            # very high-confidence detections that happen near borders.
-            if (not is_high_conf_phone) and near_edge and conf < PHONE_EDGE_STRICT_CONF:
-                continue
-
-            # Phone detection is independent from hand/person presence by default.
-            # Optional person-context gating can be re-enabled via env if needed.
-            if PHONE_REQUIRE_PERSON_CONTEXT:
-                has_person_context = phone_has_person_context((x1, y1, x2, y2), person_boxes, frame_w, frame_h)
-                if not has_person_context and conf < PHONE_NO_PERSON_MIN_CONF:
-                    continue
-
-            phone_cx, phone_cy = (x1 + x2) // 2, (y1 + y2) // 2
-
-            if conf >= PHONE_MIN_CONF:
-                if track_id != -1:
-                    current_frame_phone_ids.append(track_id)
-                    phone_persistence_map[track_id] = phone_persistence_map.get(track_id, 0) + 1
-                    if phone_persistence_map.get(track_id, 0) >= PHONE_PERSISTENCE:
-                        save_alert(img, "PHONE_DETECTED", alert_cooldowns, bbox_center=(phone_cx, phone_cy))
+            # Process MediaPipe violations for alerts
+            for violation in last_handface_violations:
+                violation_type = violation["type"]
+                if violation_type == "head_turn":
+                    alert_reason = "HEAD_LEFT" if "LEFT" in violation["description"] else "HEAD_RIGHT"
+                elif violation_type == "head_down":
+                    alert_reason = "HEAD_DOWN"
+                elif violation_type == "hand_signal":
+                    alert_reason = "HAND_SIGNAL"
                 else:
-                    # Tracking can be unavailable in prediction/fallback mode.
-                    # Use stricter confidence and a short consecutive-frame streak.
-                    if conf >= PHONE_NO_TRACK_MIN_CONF:
-                        no_track_phone_seen = True
-                        last_no_track_phone_center = (phone_cx, phone_cy)
-
-        if no_track_phone_seen:
-            phone_no_track_persistence += 1
-            if phone_no_track_persistence >= PHONE_NO_TRACK_PERSISTENCE and last_no_track_phone_center:
-                save_alert(
-                    img,
-                    "PHONE_DETECTED",
-                    alert_cooldowns,
-                    bbox_center=last_no_track_phone_center
-                )
-        else:
-            phone_no_track_persistence = max(0, phone_no_track_persistence - 1)
-            if phone_no_track_persistence == 0:
-                last_no_track_phone_center = None
-
-        for pid in list(phone_persistence_map.keys()):
-            if pid not in current_frame_phone_ids:
-                phone_persistence_map[pid] = max(0, phone_persistence_map[pid] - 1)
-                if phone_persistence_map[pid] == 0:
-                    del phone_persistence_map[pid]
-        
-        # Draw face landmarks and head direction
-        if face_results and face_results.multi_face_landmarks:
-            for face_landmarks in face_results.multi_face_landmarks:
-                direction, nose_coords = get_head_direction_simple(face_landmarks.landmark)
-                if direction:
-                    nose_x, nose_y = int(nose_coords[0] * FRAME_WIDTH), int(nose_coords[1] * FRAME_HEIGHT)
-                    cv2.putText(img, f"HEAD_{direction}", (nose_x-30, nose_y-20), 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)  # Red color
-        
-        # Emit frame for web streaming at controlled FPS to avoid frontend/socket backlog
-        now_ts = time.time()
-        if now_ts - last_stream_emit_ts >= (1.0 / STREAM_TARGET_FPS):
-            emit_frame(img)
-            last_stream_emit_ts = now_ts
-        time.sleep(0.005)
-        
-        # Optional: Keep window for debugging (remove if not needed)
-        # cv2.imshow("Exam Monitor Camera", img)
-        # if cv2.waitKey(1) & 0xFF == ord('q'):
-        #     break
-    cap.release()
-    cv2.destroyAllWindows()
+                    continue
+                
+                if tracker.record(violation_type):
+                    timestamp = datetime.now()
+                    # Use frame center as bbox for MediaPipe alerts
+                    h, w = frame.shape[:2]
+                    bbox = (w//4, h//4, 3*w//4, 3*h//4)
+                    snapshot_path = save_evidence(frame, alert_reason, timestamp, bbox)
+                    emit_alert(alert_reason, bbox, violation["confidence"], 
+                             (w, h), snapshot_path, timestamp)
+                    _beep("generic")
+            
+            # Draw YOLO detections for objects only (phones, watches, papers)
+            for detection in last_detections:
+                x1, y1, x2, y2 = map(int, detection["bbox"])
+                conf = detection["conf"]
+                category = detection["category"]
+                
+                # Color based on category
+                if category == "mobile":
+                    color = (0, 165, 255)  # Orange
+                    label_text = "PHONE"
+                elif category == "watch":
+                    color = (0, 255, 0)  # Green
+                    label_text = "WATCH"
+                elif category == "paper":
+                    color = (255, 0, 0)  # Blue
+                    label_text = "PAPER"
+                else:
+                    color = (0, 255, 255)  # Yellow
+                    label_text = "OBJECT"
+                
+                cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                (text_w, text_h), _ = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                cv2.rectangle(frame, (x1, y1 - text_h - 8), (x1 + text_w + 8, y1), color, -1)
+                cv2.putText(frame, label_text, (x1 + 4, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
+            
+            # MediaPipe overlays enabled - showing hand and face detection without bounding boxes
+            handface_detector.draw_overlay(frame, handface_overlay_data if frame_idx % MEDIAPIPE_PROCESS_EVERY == 0 else [])
+            
+            # Draw FPS
+            cv2.putText(frame, f"FPS: {fps:.1f}", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2, cv2.LINE_AA)
+            
+            # Emit frame
+            emit_frame(frame, frame_throttle_state)
+            
+    except KeyboardInterrupt:
+        log("Monitoring interrupted by user")
+    except Exception as e:
+        log(f"Error in main loop: {e}")
+    finally:
+        yolo_running = False
+        if cap:
+            cap.release()
+        log("Monitoring stopped")
 
 if __name__ == "__main__":
-    run_system()
+    main()

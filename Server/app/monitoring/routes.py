@@ -5,78 +5,58 @@ from app import socketio
 import subprocess
 import threading
 import os
+import re
 from datetime import datetime
 import sys
 import math
 import time
 
 EMIT_LEGACY_MONITORING_FRAME = os.environ.get('EMIT_LEGACY_MONITORING_FRAME', '0').lower() in ('1', 'true', 'yes', 'on')
-SOCKET_STREAM_TARGET_FPS = max(1, int(os.environ.get('SOCKET_STREAM_TARGET_FPS', '10')))
+SOCKET_STREAM_TARGET_FPS = max(1, int(os.environ.get('SOCKET_STREAM_TARGET_FPS', '20')))
 SOCKET_EMIT_EVERY_N = max(1, int(os.environ.get('SOCKET_EMIT_EVERY_N', '1')))
 
 MONITOR_QUALITY_PRESETS = {
     'onnx_directml': {
         'MONITOR_FRAME_WIDTH': '1280',
         'MONITOR_FRAME_HEIGHT': '720',
-        'YOLO_IMAGE_SIZE': '640',
-        'YOLO_PROCESS_EVERY': '3',
-        'MEDIAPIPE_PROCESS_EVERY': '10',
-        'MEDIAPIPE_REFINE_LANDMARKS': '0',
-        'ENABLE_CLAHE': '0',
-        'STREAM_WIDTH': '1280',
-        'STREAM_HEIGHT': '720',
-        'STREAM_JPEG_QUALITY': '70',
-        'STREAM_TARGET_FPS': '8',
-        'SOCKET_STREAM_TARGET_FPS': '8',
-        'CAMERA_READ_LATEST': '1',
-        'CAMERA_BUFFER_FLUSH': '3',
-        'SKIP_CAMERA_PROBE': '1',
-        'CAMERA_WARMUP_FRAMES': '2',
-        'CAMERA_WARMUP_DELAY_SEC': '0.02',
-        'POST_CAMERA_INIT_DELAY_SEC': '0.2',
-        'ENABLE_TILED_INFERENCE': '0',
-        'FORCE_PREDICT_ONLY': '1',
-        'USE_ONNX_RUNTIME_DML': '1',
-    },
-    'yolo_only': {
-        'MONITOR_FRAME_WIDTH': '854',
-        'MONITOR_FRAME_HEIGHT': '480',
         'YOLO_IMAGE_SIZE': '512',
         'YOLO_PROCESS_EVERY': '4',
-        'MEDIAPIPE_PROCESS_EVERY': '99',
-        'DISABLE_MEDIAPIPE': '1',
-        'ENABLE_CLAHE': '0',
-        'STREAM_WIDTH': '320',
-        'STREAM_HEIGHT': '180',
-        'STREAM_JPEG_QUALITY': '32',
-        'STREAM_TARGET_FPS': '11',
-        'SOCKET_STREAM_TARGET_FPS': '10',
-        'CAMERA_READ_LATEST': '1',
-        'CAMERA_BUFFER_FLUSH': '3',
-        'SKIP_CAMERA_PROBE': '1',
-        'CAMERA_WARMUP_FRAMES': '2',
-        'CAMERA_WARMUP_DELAY_SEC': '0.02',
-        'POST_CAMERA_INIT_DELAY_SEC': '0.2',
-        'ENABLE_TILED_INFERENCE': '0',
-        'FORCE_PREDICT_ONLY': '1',
-        'USE_ONNX_RUNTIME_DML': '1',
-    },
-    'ultra_low_latency': {
-        'MONITOR_FRAME_WIDTH': '960',
-        'MONITOR_FRAME_HEIGHT': '540',
-        'YOLO_IMAGE_SIZE': '512',
-        'YOLO_PROCESS_EVERY': '7',
-        'MEDIAPIPE_PROCESS_EVERY': '99',
-        'DISABLE_MEDIAPIPE': '1',
+        'MEDIAPIPE_PROCESS_EVERY': '30',
         'MEDIAPIPE_REFINE_LANDMARKS': '0',
         'ENABLE_CLAHE': '0',
-        'STREAM_WIDTH': '640',
-        'STREAM_HEIGHT': '360',
-        'STREAM_JPEG_QUALITY': '45',
-        'STREAM_TARGET_FPS': '12',
-        'SOCKET_STREAM_TARGET_FPS': '10',
+        'ENABLE_CENTER_CROP_PASS': '1',
+        'CENTER_CROP_RATIO': '0.60',
+        'CENTER_CROP_CONF_SCALE': '0.85',
+        'CENTER_CROP_EVERY_N': '2',
+        'STREAM_WIDTH': '960',
+        'STREAM_HEIGHT': '540',
+        'STREAM_JPEG_QUALITY': '88',
+        'FORCE_PROCESS_RESIZE': '1',
+        'PHONE_SEARCH_CONF': '0.08',
+        'PHONE_MIN_CONF': '0.16',
+        'PHONE_NO_TRACK_MIN_CONF': '0.14',
+        'PHONE_CLASS_MIN_CONF': '0.14',
+        'PHONE_MIN_AREA_FRACTION': '0.00012',
+        'MIN_BOX_FRAME_FRACTION': '0.00004',
+        'MAX_BOX_FRAME_FRACTION': '0.30',
+        'GENERAL_DISPLAY_CONF': '0.18',
+        'WATCH_CLASS_MIN_CONF': '0.16',
+        'PAPER_CLASS_MIN_CONF': '0.16',
+        'PERSON_CLASS_MIN_CONF': '0.16',
+        'HEAD_CLASS_MIN_CONF': '0.12',
+        'OVERLAY_DUPLICATE_IOU': '0.45',
+        'OVERLAY_DUPLICATE_MIN_OVERLAP': '0.72',
+        'HEAD_TURN_MIN_DELTA_X': '0.10',
+        'HEAD_TURN_MIN_CONSEC_FRAMES': '3',
+        'HEAD_TURN_RESET_DELTA_X': '0.04',
+        'HAND_GESTURE_CLASS_MIN_CONF': '0.10',
+        'PHONE_PERSISTENCE': '1',
+        'PHONE_NO_TRACK_PERSISTENCE': '1',
+        'STREAM_TARGET_FPS': '15',
+        'SOCKET_STREAM_TARGET_FPS': '15',
+        'MONITOR_CAMERA_FPS': '20',
         'CAMERA_READ_LATEST': '1',
-        'CAMERA_BUFFER_FLUSH': '2',
+        'CAMERA_BUFFER_FLUSH': '1',
         'SKIP_CAMERA_PROBE': '1',
         'CAMERA_WARMUP_FRAMES': '2',
         'CAMERA_WARMUP_DELAY_SEC': '0.02',
@@ -84,76 +64,60 @@ MONITOR_QUALITY_PRESETS = {
         'ENABLE_TILED_INFERENCE': '0',
         'FORCE_PREDICT_ONLY': '1',
         'USE_ONNX_RUNTIME_DML': '1',
+        'YOLO_DEVICE': 'dml',
     },
     'low_latency': {
-        'YOLO_IMAGE_SIZE': '640',
-        'YOLO_PROCESS_EVERY': '3',
+        'MONITOR_FRAME_WIDTH': '640',
+        'MONITOR_FRAME_HEIGHT': '360',
+        'FORCE_PROCESS_RESIZE': '1',
+        'YOLO_IMAGE_SIZE': '384',
+        'YOLO_PROCESS_EVERY': '6',
+        'YOLO_MAX_DETECTIONS': '40',
         'MEDIAPIPE_PROCESS_EVERY': '8',
         'MEDIAPIPE_REFINE_LANDMARKS': '0',
         'ENABLE_CLAHE': '0',
-        'STREAM_WIDTH': '426',
-        'STREAM_HEIGHT': '240',
-        'STREAM_JPEG_QUALITY': '38',
-        'STREAM_TARGET_FPS': '15',
-        'SOCKET_STREAM_TARGET_FPS': '12',
-        'CAMERA_READ_LATEST': '1',
-        'CAMERA_BUFFER_FLUSH': '1',
-        'ENABLE_TILED_INFERENCE': '0',
-    },
-    'balanced': {
-        'YOLO_IMAGE_SIZE': '960',
-        'YOLO_PROCESS_EVERY': '2',
-        'MEDIAPIPE_PROCESS_EVERY': '4',
-        'STREAM_WIDTH': '512',
-        'STREAM_HEIGHT': '288',
-        'STREAM_JPEG_QUALITY': '48',
-        'STREAM_TARGET_FPS': '12',
-        'SOCKET_STREAM_TARGET_FPS': '10',
-        'CAMERA_READ_LATEST': '1',
-        'CAMERA_BUFFER_FLUSH': '2',
-        'ENABLE_TILED_INFERENCE': '1',
-        'TILED_INFERENCE_EVERY': '4',
-    },
-    'amd_optimized': {
-        'MONITOR_FRAME_WIDTH': '1280',
-        'MONITOR_FRAME_HEIGHT': '720',
-        'YOLO_IMAGE_SIZE': '960',
-        'YOLO_PROCESS_EVERY': '2',
-        'MEDIAPIPE_PROCESS_EVERY': '6',
-        'MEDIAPIPE_REFINE_LANDMARKS': '0',
-        'ENABLE_CLAHE': '1',
         'STREAM_WIDTH': '640',
         'STREAM_HEIGHT': '360',
         'STREAM_JPEG_QUALITY': '68',
-        'STREAM_TARGET_FPS': '12',
-        'SOCKET_STREAM_TARGET_FPS': '10',
+        'STREAM_JPEG_OPTIMIZE': '1',
+        'STREAM_JPEG_PROGRESSIVE': '0',
+        'STREAM_TARGET_FPS': '18',
+        'SOCKET_STREAM_TARGET_FPS': '16',
+        'MONITOR_CAMERA_FPS': '24',
         'CAMERA_READ_LATEST': '1',
-        'CAMERA_BUFFER_FLUSH': '1',
+        'CAMERA_BUFFER_FLUSH': '0',
         'SKIP_CAMERA_PROBE': '1',
-        'CAMERA_WARMUP_FRAMES': '2',
-        'CAMERA_WARMUP_DELAY_SEC': '0.02',
-        'POST_CAMERA_INIT_DELAY_SEC': '0.2',
-        'ENABLE_TILED_INFERENCE': '1',
-        'TILED_INFERENCE_EVERY': '3',
-        'YOLO_MAX_DETECTIONS': '60',
         'FORCE_PREDICT_ONLY': '1',
-        'USE_ONNX_RUNTIME_DML': '1',
-    },
-    'high_accuracy': {
-        'MONITOR_FRAME_WIDTH': '1920',
-        'MONITOR_FRAME_HEIGHT': '1080',
-        'YOLO_IMAGE_SIZE': '1280',
-        'YOLO_PROCESS_EVERY': '1',
-        'MEDIAPIPE_PROCESS_EVERY': '4',
-        'STREAM_WIDTH': '640',
-        'STREAM_HEIGHT': '360',
-        'STREAM_JPEG_QUALITY': '60',
-        'STREAM_TARGET_FPS': '10',
-        'SOCKET_STREAM_TARGET_FPS': '10',
-        'CAMERA_READ_LATEST': '1',
-        'CAMERA_BUFFER_FLUSH': '1',
-        'ENABLE_TILED_INFERENCE': '1',
-        'TILED_INFERENCE_EVERY': '2',
+        'MAIN_LOOP_SLEEP_SEC': '0',
+        'GENERAL_DISPLAY_CONF': '0.12',
+        'MODEL_INFER_CONF': '0.08',
+        'OBJECT_DRAW_MIN_CONF': '0.10',
+        'PHONE_MIN_CONF': '0.35',
+        'PHONE_CLASS_MIN_CONF': '0.40',
+        'PHONE_DRAW_MIN_CONF': '0.42',
+        'PHONE_MIN_LONG_SHORT_RATIO': '1.05',
+        'PAPER_CLASS_MIN_CONF': '0.20',
+        'HEAD_CLASS_MIN_CONF': '0.10',
+        'OVERLAY_DUPLICATE_IOU': '0.45',
+        'OVERLAY_DUPLICATE_MIN_OVERLAP': '0.72',
+        'YOLO_WORLD_CLASSES': 'head, face, human face, hand, raised hand, finger, fingers, cell phone, wrist watch, exam paper, answer sheet, question paper',
+        'ALERT_CONFIRM_FRAMES': '1',
+        'HEAD_MIN_AREA_FRACTION': '0.0008',
+        'HEAD_TURN_MIN_DELTA_X': '0.08',
+        'HEAD_TURN_MIN_CONSEC_FRAMES': '3',
+        'HEAD_TURN_RESET_DELTA_X': '0.04',
+        'HEAD_TURN_COOLDOWN_SEC': '2.0',
+        'HEAD_TRACK_SMOOTHING': '0.60',
+        'HAND_CLASS_MIN_CONF': '0.10',
+        'HAND_SIGNAL_MOVEMENT_DELTA': '0.015',
+        'HAND_SIGNAL_MIN_EVENTS': '2',
+        'HAND_SIGNAL_MIN_STREAK': '5',
+        'HAND_SIGNAL_WINDOW_SEC': '6.0',
+        'HAND_SIGNAL_COOLDOWN_SEC': '12.0',
+        'HAND_SIGNAL_UPPER_Y_MAX': '0.82',
+        'PAPER_PHONE_IOU_SUPPRESSION': '0.35',
+        'PAPER_PHONE_CONF_RATIO': '0.80',
+        'ENABLE_TILED_INFERENCE': '0',
     },
 }
 
@@ -248,15 +212,14 @@ def handle_monitoring_disconnect():
 
 def get_severity(reason):
     """Get alert severity level"""
-    high_severity = ['PHONE_DETECTED', 'PAPER_PASSING']
-    medium_severity = ['WATCH_DETECTED', 'HAND_MOUTH']
+    object_alerts = {'PHONE_DETECTED', 'WATCH_DETECTED', 'PAPER_PASSING'}
+    return 'high' if reason in object_alerts else 'low'
 
-    if reason in high_severity:
-        return 'high'
-    elif reason in medium_severity:
-        return 'medium'
-    else:
-        return 'low'
+
+def get_alert_category(reason):
+    """Classify alert as object or behavior category."""
+    object_alerts = {'PHONE_DETECTED', 'WATCH_DETECTED', 'PAPER_PASSING'}
+    return 'object' if reason in object_alerts else 'behavior'
 
 
 def resolve_student_from_detection(app, exam_session_id, norm_x, norm_y):
@@ -430,157 +393,207 @@ def process_monitor_output(process, socketio_instance, app):
                         print(f"Error emitting frame: {e}")
 
                 elif line.startswith('ALERT:'):
-                    parts = line.split(':', 4)
-                    if len(parts) >= 2:
-                        reason = parts[1]
-                        timestamp = parts[2] if len(parts) > 2 else ""
-                        filename = parts[3] if len(parts) > 3 else None
-                        bbox_info = parts[4] if len(parts) > 4 else None
+                    raw_payload = line[6:]
+                    reason = ""
+                    timestamp = ""
+                    filename = None
+                    bbox_info = None
 
-                        # Parse optional bounding-box centre + frame dimensions
-                        # Format: cx,cy,frame_w,frame_h
-                        norm_x = None
-                        norm_y = None
-                        if bbox_info:
-                            try:
-                                bbox_parts = bbox_info.split(',')
-                                if len(bbox_parts) >= 4:
-                                    cx = int(bbox_parts[0])
-                                    cy = int(bbox_parts[1])
-                                    fw = int(bbox_parts[2])
-                                    fh = int(bbox_parts[3])
-                                    if fw > 0 and fh > 0:
-                                        norm_x = cx / fw
-                                        norm_y = cy / fh
-                            except (ValueError, ZeroDivisionError):
-                                pass
+                    # New robust format: ALERT:<reason>|<timestamp>|<filename>|<bbox>
+                    if '|' in raw_payload:
+                        parts = raw_payload.split('|', 3)
+                        reason = parts[0] if len(parts) > 0 else ""
+                        timestamp = parts[1] if len(parts) > 1 else ""
+                        filename = parts[2] if len(parts) > 2 else None
+                        bbox_info = parts[3] if len(parts) > 3 else None
+                    else:
+                        # Legacy fallback: ALERT:<reason>:<iso_timestamp>:<filename>:<bbox>
+                        # Split reason first, then parse the remaining payload with an ISO timestamp regex
+                        # so ':' inside timestamp/Windows paths does not corrupt filename extraction.
+                        first_colon = raw_payload.find(':')
+                        if first_colon >= 0:
+                            reason = raw_payload[:first_colon]
+                            rest = raw_payload[first_colon + 1:]
 
-                        image_path = None
-                        if filename:
-                            base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'suspicious_alerts'))
-                            if os.path.isabs(filename):
-                                relative_path = os.path.relpath(filename, base_dir)
+                            bbox_match = re.search(r':(\d+,\d+,\d+,\d+)$', rest)
+                            if bbox_match:
+                                bbox_info = bbox_match.group(1)
+                                rest = rest[:bbox_match.start()]
+
+                            ts_match = re.match(
+                                r'^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})?):(.*)$',
+                                rest
+                            )
+                            if ts_match:
+                                timestamp = ts_match.group(1)
+                                filename = ts_match.group(2)
                             else:
-                                relative_path = os.path.relpath(filename, 'suspicious_alerts')
-                            relative_path = relative_path.replace(os.sep, '/')
-                            image_path = f"/api/alerts/{relative_path}"
-                        print(f"[Monitor] Alert: {reason}")
+                                second_colon = rest.find(':')
+                                if second_colon >= 0:
+                                    timestamp = rest[:second_colon]
+                                    filename = rest[second_colon + 1:]
+                                else:
+                                    timestamp = rest
+                                    filename = None
 
-                        # Resolve student from seating plan (if coordinates available)
-                        exam_session_id = getattr(app, 'current_exam_session_id', None)
-                        student_info = resolve_student_from_detection(app, exam_session_id, norm_x, norm_y)
-                        student_name = student_info['student_name'] if student_info else None
-                        roll_number = student_info['roll_number'] if student_info else None
-                        seat_number = student_info['seat_number'] if student_info else None
+                    # Parse optional bounding-box centre + frame dimensions
+                    # Format: cx,cy,frame_w,frame_h
+                    norm_x = None
+                    norm_y = None
+                    if bbox_info:
+                        try:
+                            bbox_parts = bbox_info.split(',')
+                            if len(bbox_parts) >= 4:
+                                cx = int(bbox_parts[0])
+                                cy = int(bbox_parts[1])
+                                fw = int(bbox_parts[2])
+                                fh = int(bbox_parts[3])
+                                if fw > 0 and fh > 0:
+                                    norm_x = cx / fw
+                                    norm_y = cy / fh
+                        except (ValueError, ZeroDivisionError):
+                            pass
 
-                        if student_info:
-                            print(f"[Monitor] Detected student: {student_name} (Roll: {roll_number}, Seat: {seat_number})")
+                    image_path = None
+                    if filename:
+                        filename = str(filename).strip()
+                        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'suspicious_alerts'))
+                        resolved = filename
+                        if os.path.isabs(filename):
+                            try:
+                                relative_path = os.path.relpath(filename, base_dir)
+                                if relative_path.startswith('..'):
+                                    relative_path = os.path.basename(filename)
+                            except Exception:
+                                relative_path = os.path.basename(filename)
+                        else:
+                            normalized = str(filename).replace('\\', '/').lstrip('/')
+                            if normalized.startswith('suspicious_alerts/'):
+                                normalized = normalized.split('suspicious_alerts/', 1)[1]
+                            relative_path = normalized
 
-                        # Determine warning level and type
-                        behavior_types = ['HEAD_LEFT', 'HEAD_RIGHT', 'HAND_MOUTH', 'WATCH_DETECTED']
-                        object_types = ['PHONE_DETECTED', 'PAPER_PASSING']
-                        head_turn_types = ['HEAD_LEFT', 'HEAD_RIGHT']
-                        head_turn_escalated = False
-                        head_turn_count = 0
+                        # Prevent invalid traversal segments in generated public URL.
+                        relative_parts = [part for part in relative_path.split('/') if part not in ('', '.', '..')]
+                        safe_relative = '/'.join(relative_parts)
+                        if safe_relative:
+                            image_path = f"/api/alerts/{safe_relative}"
+                        else:
+                            image_path = f"/api/alerts/{os.path.basename(resolved)}"
 
-                        if reason in object_types:
+                    print(f"[Monitor] Alert: {reason}")
+
+                    # Resolve student from seating plan (if coordinates available)
+                    exam_session_id = getattr(app, 'current_exam_session_id', None)
+                    student_info = resolve_student_from_detection(app, exam_session_id, norm_x, norm_y)
+                    student_name = student_info['student_name'] if student_info else None
+                    roll_number = student_info['roll_number'] if student_info else None
+                    seat_number = student_info['seat_number'] if student_info else None
+
+                    if student_info:
+                        print(f"[Monitor] Detected student: {student_name} (Roll: {roll_number}, Seat: {seat_number})")
+
+                    # Determine warning level and type
+                    object_types = ['PHONE_DETECTED', 'WATCH_DETECTED', 'PAPER_PASSING']
+                    head_turn_types = ['HEAD_LEFT', 'HEAD_RIGHT']
+                    head_turn_escalated = False
+                    head_turn_count = 0
+
+                    if reason in object_types:
+                        warning_level = 2
+                        send_email = True
+                    else:
+                        warning_level = 1
+                        send_email = False
+
+                    # --- Head-turn escalation logic ---
+                    if reason in head_turn_types and student_info:
+                        student_key = roll_number or seat_number or student_name
+                        now_ts = time.time()
+
+                        # Append current timestamp
+                        if student_key not in student_head_turn_tracker:
+                            student_head_turn_tracker[student_key] = []
+                        student_head_turn_tracker[student_key].append(now_ts)
+
+                        # Prune entries older than the window
+                        cutoff = now_ts - HEAD_TURN_WINDOW_SECONDS
+                        student_head_turn_tracker[student_key] = [
+                            t for t in student_head_turn_tracker[student_key] if t >= cutoff
+                        ]
+
+                        head_turn_count = len(student_head_turn_tracker[student_key])
+
+                        if head_turn_count >= HEAD_TURN_ESCALATION_THRESHOLD:
                             warning_level = 2
                             send_email = True
-                        else:
-                            warning_level = 1
-                            send_email = False
-
-                        # --- Head-turn escalation logic ---
-                        if reason in head_turn_types and student_info:
-                            student_key = roll_number or seat_number or student_name
-                            now_ts = time.time()
-
-                            # Append current timestamp
-                            if student_key not in student_head_turn_tracker:
-                                student_head_turn_tracker[student_key] = []
-                            student_head_turn_tracker[student_key].append(now_ts)
-
-                            # Prune entries older than the window
-                            cutoff = now_ts - HEAD_TURN_WINDOW_SECONDS
-                            student_head_turn_tracker[student_key] = [
-                                t for t in student_head_turn_tracker[student_key] if t >= cutoff
-                            ]
-
-                            head_turn_count = len(student_head_turn_tracker[student_key])
-
-                            if head_turn_count >= HEAD_TURN_ESCALATION_THRESHOLD:
-                                warning_level = 2
-                                send_email = True
-                                head_turn_escalated = True
-                                print(
-                                    f"[Monitor] Head-turn ESCALATED to Level 2 for "
-                                    f"{student_name} ({roll_number}) — "
-                                    f"{head_turn_count} turns in last {HEAD_TURN_WINDOW_SECONDS}s"
-                                )
-
-                        # Build description with student info
-                        description = f"Auto-detected: {reason}"
-                        if student_info:
-                            description = f"{reason} — {student_name} (Roll: {roll_number}, Seat: {seat_number})"
-                        if head_turn_escalated:
-                            description += f" [ESCALATED: {head_turn_count} head turns in {HEAD_TURN_WINDOW_SECONDS}s]"
-
-                        # Save to DB
-                        try:
-                            # Save incident to DB
-                            incident_model = app.incident_model
-                            incident = incident_model.create_incident(
-                                exam_session_id=exam_session_id,
-                                incident_type=reason,
-                                description=description,
-                                image_url=image_path,
-                                confidence_score=None,
-                                student_name=student_name,
-                                roll_number=roll_number,
-                                seat_number=seat_number,
+                            head_turn_escalated = True
+                            print(
+                                f"[Monitor] Head-turn ESCALATED to Level 2 for "
+                                f"{student_name} ({roll_number}) — "
+                                f"{head_turn_count} turns in last {HEAD_TURN_WINDOW_SECONDS}s"
                             )
-                            # Emit to dashboard
-                            payload = {
-                                'reason': reason,
-                                'timestamp': timestamp,
-                                'alert_time': datetime.now().isoformat(),
-                                'filename': filename,
-                                'severity': 'high' if head_turn_escalated else get_severity(reason),
-                                'warning_level': warning_level,
-                                'exam_session_id': exam_session_id,
-                                'student_name': student_name,
-                                'roll_number': roll_number,
-                                'seat_number': seat_number,
-                                'head_turn_escalated': head_turn_escalated,
-                                'head_turn_count': head_turn_count if head_turn_escalated else None,
-                            }
-                            socketio_instance.emit('log', line, namespace='/')
-                            socketio_instance.emit('monitoring_alert', payload, namespace='/monitoring')
-                            socketio_instance.emit('monitoring_alert', payload, namespace='/')
-                            # Send email for object detection only
-                            if send_email:
-                                try:
-                                    threading.Thread(
-                                        target=_send_alert_email_async,
-                                        args=(
-                                            app,
-                                            exam_session_id,
-                                            reason,
-                                            timestamp,
-                                            filename,
-                                            student_name,
-                                            roll_number,
-                                            seat_number,
-                                            head_turn_escalated,
-                                            head_turn_count,
-                                            HEAD_TURN_WINDOW_SECONDS,
-                                        ),
-                                        daemon=True,
-                                    ).start()
-                                except Exception as e:
-                                    print(f"[DEBUG] Error sending email for Level 2 warning: {e}")
-                        except Exception as e:
-                            print(f"Error emitting alert: {e}")
+
+                    # Build description with student info
+                    description = f"Auto-detected: {reason}"
+                    if student_info:
+                        description = f"{reason} — {student_name} (Roll: {roll_number}, Seat: {seat_number})"
+                    if head_turn_escalated:
+                        description += f" [ESCALATED: {head_turn_count} head turns in {HEAD_TURN_WINDOW_SECONDS}s]"
+
+                    # Save to DB
+                    try:
+                        incident_model = app.incident_model
+                        incident_model.create_incident(
+                            exam_session_id=exam_session_id,
+                            incident_type=reason,
+                            description=description,
+                            image_url=image_path,
+                            confidence_score=None,
+                            student_name=student_name,
+                            roll_number=roll_number,
+                            seat_number=seat_number,
+                        )
+                        payload = {
+                            'reason': reason,
+                            'timestamp': timestamp,
+                            'alert_time': datetime.now().isoformat(),
+                            'filename': filename,
+                            'category': get_alert_category(reason),
+                            'severity': 'high' if head_turn_escalated else get_severity(reason),
+                            'warning_level': warning_level,
+                            'exam_session_id': exam_session_id,
+                            'student_name': student_name,
+                            'roll_number': roll_number,
+                            'seat_number': seat_number,
+                            'head_turn_escalated': head_turn_escalated,
+                            'head_turn_count': head_turn_count if head_turn_escalated else None,
+                        }
+                        socketio_instance.emit('log', line, namespace='/')
+                        socketio_instance.emit('monitoring_alert', payload, namespace='/monitoring')
+                        socketio_instance.emit('monitoring_alert', payload, namespace='/')
+                        if send_email:
+                            try:
+                                threading.Thread(
+                                    target=_send_alert_email_async,
+                                    args=(
+                                        app,
+                                        exam_session_id,
+                                        reason,
+                                        timestamp,
+                                        filename,
+                                        student_name,
+                                        roll_number,
+                                        seat_number,
+                                        head_turn_escalated,
+                                        head_turn_count,
+                                        HEAD_TURN_WINDOW_SECONDS,
+                                    ),
+                                    daemon=True,
+                                ).start()
+                            except Exception as e:
+                                print(f"[DEBUG] Error sending email for Level 2 warning: {e}")
+                    except Exception as e:
+                        print(f"Error emitting alert: {e}")
 
                 else:
                     # Status/log line - emit as "log" to default namespace (FYP style)
@@ -623,12 +636,45 @@ def start_monitoring():
 
         data = request.get_json(silent=True) or {}
         session_id = data.get('session_id')
-        quality_preset = str(data.get('quality_preset') or 'balanced').strip().lower()
+        quality_preset = str(data.get('quality_preset') or 'low_latency').strip().lower()
+        camera_source = data.get('camera_source')
+        if camera_source is not None:
+            camera_source = str(camera_source).strip()
+            if not camera_source:
+                camera_source = None
+
+        raw_camera_mode = data.get('camera_mode')
+        if raw_camera_mode is None:
+            raw_camera_mode = os.environ.get('MONITOR_CAMERA_MODE', 'external')
+        camera_mode = str(raw_camera_mode or 'external').strip().lower() or 'external'
+        camera_mode = ''.join(ch for ch in camera_mode if ch.isalnum() or ch in ('-', '_')) or 'external'
+        if camera_mode not in {'external', 'laptop'}:
+            return jsonify({'error': 'Invalid camera_mode. Use external or laptop.'}), 400
+
+        default_external_source = os.environ.get(
+            'EXTERNAL_MONITOR_CAMERA_SOURCE',
+            os.environ.get('MONITOR_CAMERA_SOURCE', '0')
+        )
+        default_laptop_source = os.environ.get('LAPTOP_MONITOR_CAMERA_SOURCE', '0')
+
+        if camera_mode == 'laptop':
+            effective_camera_source = camera_source or default_laptop_source
+            effective_camera_backend = os.environ.get('LAPTOP_MONITOR_CAMERA_BACKEND', 'auto')
+        else:
+            effective_camera_source = camera_source or default_external_source
+            effective_camera_backend = os.environ.get(
+                'EXTERNAL_MONITOR_CAMERA_BACKEND',
+                os.environ.get('MONITOR_CAMERA_BACKEND', 'auto')
+            )
+
+        effective_camera_source = str(effective_camera_source).strip() or '0'
+        effective_camera_backend = str(effective_camera_backend).strip().lower() or 'auto'
+
         if not session_id:
             return jsonify({'error': 'session_id is required'}), 400
         if quality_preset not in MONITOR_QUALITY_PRESETS:
             return jsonify({
-                'error': 'Invalid quality_preset. Use onnx_directml, yolo_only, ultra_low_latency, low_latency, balanced, amd_optimized, or high_accuracy.'
+                'error': 'Invalid quality_preset. Use onnx_directml or low_latency.'
             }), 400
 
         # Apply socket emission throttle from selected preset in the parent process.
@@ -691,6 +737,9 @@ def start_monitoring():
                 'PYTHONUNBUFFERED': '1',
                 'EXAM_SESSION_FOLDER': session_folder,
                 'MONITOR_QUALITY_PRESET': quality_preset,
+                'MONITOR_CAMERA_SOURCE': effective_camera_source,
+                'MONITOR_CAMERA_BACKEND': effective_camera_backend,
+                'MONITOR_CAMERA_MODE': camera_mode,
             }
         )
 
@@ -712,6 +761,8 @@ def start_monitoring():
             'pid': current_process.pid,
             'session_id': session_id,
             'quality_preset': quality_preset,
+            'camera_source': effective_camera_source,
+            'camera_mode': camera_mode,
         }), 200
 
     except Exception as e:

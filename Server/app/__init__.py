@@ -9,7 +9,14 @@ from config import config
 # Initialize extensions
 jwt = JWTManager()
 bcrypt = Bcrypt()
-socketio = SocketIO(app=None, cors_allowed_origins="*", max_http_buffer_size=10_000_000, async_mode="eventlet")
+socketio = SocketIO(
+    app=None,
+    cors_allowed_origins="*",
+    max_http_buffer_size=10_000_000,
+    async_mode="threading",
+    logger=False,
+    engineio_logger=False,
+)
 
 def create_app(config_name='default'):
     app = Flask(__name__)
@@ -26,7 +33,9 @@ def create_app(config_name='default'):
         'http://127.0.0.1:5173',
         'http://localhost:5173',
         'http://localhost:3000',
-        'http://127.0.0.1:3000'
+        'http://127.0.0.1:3000',
+        'http://localhost:3001',
+        'http://127.0.0.1:3001'
     ])
 
     # Initialize MongoDB connection

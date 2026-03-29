@@ -5,6 +5,34 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 from app.main import bp
 from app import get_models
 
+
+def _normalize_incident_image_url(image_url):
+    if not image_url:
+        return image_url
+
+    raw = str(image_url).strip()
+    if not raw:
+        return raw
+    if raw.startswith('http://') or raw.startswith('https://'):
+        return raw
+
+    normalized = raw.replace('\\', '/')
+    lower = normalized.lower()
+
+    if lower.startswith('/api/alerts'):
+        remainder = normalized[len('/api/alerts'):].lstrip('/ ')
+        safe_parts = [part for part in remainder.split('/') if part not in ('', '.', '..')]
+        return f"/api/alerts/{'/'.join(safe_parts)}" if safe_parts else None
+
+    if 'suspicious_alerts/' in lower:
+        marker = lower.rfind('suspicious_alerts/')
+        remainder = normalized[marker + len('suspicious_alerts/'):]
+        safe_parts = [part for part in remainder.split('/') if part not in ('', '.', '..')]
+        return f"/api/alerts/{'/'.join(safe_parts)}" if safe_parts else None
+
+    safe_parts = [part for part in normalized.lstrip('/').split('/') if part not in ('', '.', '..')]
+    return f"/api/alerts/{'/'.join(safe_parts)}" if safe_parts else None
+
 @bp.route('/health', methods=['GET'])
 def health_check():
     """Health check endpoint"""
@@ -179,21 +207,8 @@ def list_teacher_incidents():
                 return jsonify({'message': 'Invalid limit value'}), 400
 
         incidents = [incident_model.to_dict(i) for i in cursor]
-        base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'suspicious_alerts'))
         for incident in incidents:
-            image_url = incident.get('image_url')
-            if not image_url or image_url.startswith('http') or image_url.startswith('/api/alerts/'):
-                continue
-            if image_url.startswith('suspicious_alerts'):
-                relative = image_url.split('suspicious_alerts', 1)[1].lstrip('/\\')
-                incident['image_url'] = f"/api/alerts/{relative.replace(os.sep, '/')}"
-                continue
-            if os.path.isabs(image_url):
-                relative = os.path.relpath(image_url, base_dir)
-                if not relative.startswith('..'):
-                    incident['image_url'] = f"/api/alerts/{relative.replace(os.sep, '/')}"
-                    continue
-            incident['image_url'] = f"/api/alerts/{os.path.basename(image_url)}"
+            incident['image_url'] = _normalize_incident_image_url(incident.get('image_url'))
 
         return jsonify({
             'incidents': incidents,
@@ -209,7 +224,12 @@ def get_alert_image(filename):
     """Serve stored alert evidence images"""
     try:
         base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'suspicious_alerts'))
-        return send_from_directory(base_dir, filename)
+        normalized = str(filename).replace('\\', '/').lstrip('/')
+        safe_parts = [part for part in normalized.split('/') if part not in ('', '.', '..')]
+        if not safe_parts:
+            return jsonify({'message': 'Image not found'}), 404
+        safe_filename = '/'.join(safe_parts)
+        return send_from_directory(base_dir, safe_filename)
     except FileNotFoundError:
         return jsonify({'message': 'Image not found'}), 404
 

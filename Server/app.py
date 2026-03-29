@@ -1,10 +1,9 @@
-import eventlet
-eventlet.monkey_patch()
-
 import os
+import logging
 from app import create_app, socketio
 
 app = create_app(os.getenv('FLASK_CONFIG') or 'default')
+logging.getLogger('werkzeug').setLevel(logging.ERROR)
 
 @app.shell_context_processor
 def make_shell_context():
@@ -16,4 +15,4 @@ def make_shell_context():
     }
 
 if __name__ == '__main__':
-    socketio.run(app, debug=False, host='0.0.0.0', port=5000)
+    socketio.run(app, debug=False, host='0.0.0.0', port=5000, allow_unsafe_werkzeug=True)

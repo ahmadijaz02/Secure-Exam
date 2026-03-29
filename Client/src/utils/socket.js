@@ -16,7 +16,8 @@ class SocketService {
         reconnection: true,
         reconnectionDelay: 1000,
         reconnectionDelayMax: 5000,
-        reconnectionAttempts: 5
+        reconnectionAttempts: 5,
+        transports: ['websocket']
       });
 
       this.socket.on('connect', () => {
@@ -41,7 +42,8 @@ class SocketService {
         reconnectionDelay: 1000,
         reconnectionDelayMax: 5000,
         reconnectionAttempts: 5,
-        transports: ['websocket', 'polling']
+        transports: ['websocket'],
+        upgrade: false
       });
 
       this.monitoringSocket.on('connect', () => {

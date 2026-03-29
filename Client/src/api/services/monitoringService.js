@@ -4,12 +4,22 @@ const monitoringService = {
   /**
    * Start monitoring camera
    */
-  async startMonitoring(sessionId, qualityPreset = 'amd_optimized') {
+  async startMonitoring(sessionId, qualityPreset = 'low_latency', cameraSource = null, cameraMode = 'laptop') {
     try {
-      return await apiService.post('/monitoring/start', {
+      const payload = {
         session_id: sessionId,
         quality_preset: qualityPreset,
-      });
+      };
+
+      if (cameraSource && String(cameraSource).trim()) {
+        payload.camera_source = String(cameraSource).trim();
+      }
+
+      if (cameraMode && String(cameraMode).trim()) {
+        payload.camera_mode = String(cameraMode).trim().toLowerCase();
+      }
+
+      return await apiService.post('/monitoring/start', payload, { timeout: 60000 });
     } catch (error) {
       throw error;
     }

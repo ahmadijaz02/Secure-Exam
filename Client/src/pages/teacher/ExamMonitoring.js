@@ -9,6 +9,8 @@ import LoadingSpinner from '../../components/ui/LoadingSpinner';
 
 // Same pattern as FYP: default namespace, "frame" (raw base64) and "log" (string)
 const ExamMonitoring = () => {
+    const objectAlertReasons = ['PHONE_DETECTED', 'WATCH_DETECTED', 'PAPER_PASSING'];
+
   const navigate = useNavigate();
   const { examSessionId } = useParams();
   const notification = useNotification();
@@ -87,8 +89,9 @@ const ExamMonitoring = () => {
       timestamp: payload.timestamp || '',
       alert_time: payload.alert_time || new Date().toISOString(),
       filename: payload.filename,
-      severity: payload.severity || (['PHONE_DETECTED', 'PAPER_PASSING'].includes(payload.reason) ? 'high' : ['WATCH_DETECTED', 'HAND_MOUTH'].includes(payload.reason) ? 'medium' : 'low'),
+      severity: payload.severity || (objectAlertReasons.includes(payload.reason) ? 'high' : 'low'),
       warning_level: payload.warning_level,
+      category: payload.category || (objectAlertReasons.includes(payload.reason) ? 'object' : 'behavior'),
       student_name: payload.student_name || null,
       roll_number: payload.roll_number || null,
       seat_number: payload.seat_number || null,
@@ -107,30 +110,6 @@ const ExamMonitoring = () => {
     if (!msg || typeof msg !== 'string') return;
     setLogs((prev) => [msg, ...prev].slice(0, 200));
     setSystemStatus(msg.length > 80 ? msg.slice(0, 80) + '...' : msg);
-    if (msg.startsWith('ALERT:')) {
-      const parts = msg.split(':');
-      const reason = parts[1] || 'ALERT';
-      const timestamp = parts[2] || '';
-      // Basic fallback — detailed student info comes via monitoring_alert event
-      setAlerts((prev) => {
-        // Avoid duplicate if monitoring_alert already added it
-        const recent = prev[0];
-        if (recent && recent.reason === reason && Math.abs(new Date(recent.alert_time).getTime() - Date.now()) < 2000) {
-          return prev;
-        }
-        return [
-          {
-            id: Date.now() + Math.random(),
-            reason,
-            timestamp,
-            alert_time: new Date().toISOString(),
-            filename: parts[3],
-            severity: ['PHONE_DETECTED', 'PAPER_PASSING'].includes(reason) ? 'high' : ['WATCH_DETECTED', 'HAND_MOUTH'].includes(reason) ? 'medium' : 'low'
-          },
-          ...prev
-        ];
-      });
-    }
   }, []);
 
   useEffect(() => {
@@ -220,6 +199,7 @@ const ExamMonitoring = () => {
       PHONE_DETECTED: 'Phone Detected',
       WATCH_DETECTED: 'Watch Detected',
       HAND_MOUTH: 'Hand Near Mouth',
+      SIGN_LANGUAGE_CHEATING: 'Sign Language Cheating',
       HEAD_LEFT: 'Head Looking Left',
       HEAD_RIGHT: 'Head Looking Right',
       PAPER_PASSING: 'Paper Passing'
@@ -228,11 +208,7 @@ const ExamMonitoring = () => {
   };
 
   const getAlertSeverity = (reason) => {
-    const high = ['PHONE_DETECTED', 'PAPER_PASSING'];
-    const medium = ['WATCH_DETECTED', 'HAND_MOUTH'];
-    if (high.includes(reason)) return 'high';
-    if (medium.includes(reason)) return 'medium';
-    return 'low';
+    return objectAlertReasons.includes(reason) ? 'high' : 'low';
   };
 
   const playAlertSound = () => {
@@ -371,7 +347,6 @@ const ExamMonitoring = () => {
                     const severity = alert.severity || getAlertSeverity(alert.reason);
                     const colors = {
                       high: 'bg-red-100 border-red-500 text-red-800 dark:bg-red-900 dark:text-red-200',
-                      medium: 'bg-yellow-100 border-yellow-500 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200',
                       low: 'bg-blue-100 border-blue-500 text-blue-800 dark:bg-blue-900 dark:text-blue-200'
                     };
                     return (
@@ -393,7 +368,7 @@ const ExamMonitoring = () => {
                             )}
                             <p className="text-sm opacity-75 mt-1">{new Date(alert.alert_time).toLocaleString()}</p>
                             <span className="inline-block text-xs mt-1 px-2 py-1 rounded bg-slate-200 dark:bg-slate-700 font-bold text-slate-700 dark:text-slate-200">
-                              Level {alert.warning_level || (['PHONE_DETECTED','PAPER_PASSING'].includes(alert.reason) ? 2 : 1)}
+                              Level {alert.warning_level || (objectAlertReasons.includes(alert.reason) ? 2 : 1)}
                             </span>
                           </div>
                           <span className="text-xs uppercase font-bold px-2 py-1 rounded">{severity}</span>
