@@ -193,8 +193,8 @@ EXTENDED_YOLO_CLASSES = [
 
 # Detection thresholds (aligned with exam_monitor.py)
 GENERAL_DISPLAY_CONF = _env_float("GENERAL_DISPLAY_CONF", 0.25)  # Changed from 0.12 to 0.25
-PHONE_MIN_CONF = _env_float("PHONE_MIN_CONF", 0.60)  # Changed from 0.35 to 0.60
-PHONE_CLASS_MIN_CONF = _env_float("PHONE_CLASS_MIN_CONF", max(0.40, PHONE_MIN_CONF))
+PHONE_MIN_CONF = _env_float("PHONE_MIN_CONF", 0.45)  # Lowered from 0.60 to 0.45
+PHONE_CLASS_MIN_CONF = _env_float("PHONE_CLASS_MIN_CONF", max(0.35, PHONE_MIN_CONF))
 WATCH_CLASS_MIN_CONF = _env_float("WATCH_CLASS_MIN_CONF", 0.20)
 PAPER_CLASS_MIN_CONF = _env_float("PAPER_CLASS_MIN_CONF", max(0.20, GENERAL_DISPLAY_CONF))
 MODEL_INFER_CONF = _env_float("MODEL_INFER_CONF", max(0.25, GENERAL_DISPLAY_CONF))  # Changed from 0.08 to 0.25
@@ -484,31 +484,41 @@ class HandFaceMovementDetector:
         return float(yaw_s), float(pitch_s)
     
     def classify_gesture(self, lm):
-        """Classify hand gesture - counts extended fingers."""
+        """Classify hand gesture with strict structural validation to avoid false positives."""
+            
         extended = []
         for i, (tip, pip, mcp) in enumerate(zip(self.FINGER_TIPS, self.FINGER_PIPS, self.FINGER_MCPS)):
-            if i == 0:  # thumb: use x distance
-                extended.append(abs(lm[tip].x - lm[mcp].x) > 0.04)
+            # Distance from tip to base knuckle (mcp)
+            tip_mcp_dist = np.hypot(lm[tip].x - lm[mcp].x, lm[tip].y - lm[mcp].y)
+            # Distance from first joint (pip) to base knuckle (mcp)
+            pip_mcp_dist = np.hypot(lm[pip].x - lm[mcp].x, lm[pip].y - lm[mcp].y)
+            
+            if i == 0:  # Thumb
+                extended.append(tip_mcp_dist > 0.05)
             else:
-                extended.append(lm[tip].y < lm[pip].y)
+                # Finger must be fully uncurled (tip far away from mcp) AND pointing upwards
+                is_straight = tip_mcp_dist > (pip_mcp_dist * 1.5)
+                is_up = lm[tip].y < lm[pip].y
+                extended.append(is_straight and is_up)
 
-        # Count extended fingers (excluding thumb for counting)
+        # Count extended main fingers (Index, Middle, Ring, Pinky)
         finger_count = sum(extended[1:])
         
+        # If all 4 main fingers are curled/closed, ignore (prevents counting fists/thumbs as signals)
         if finger_count == 0:
-            return "closed"
+            return "none"
         elif finger_count == 1:
             return "1"
         elif finger_count == 2:
             return "2"
         elif finger_count == 3:
             return "3"
-        elif finger_count == 4:
+        elif finger_count == 4 and not extended[0]:
             return "4"
-        elif finger_count >= 5:
+        elif finger_count == 4 and extended[0]:
             return "5"
         
-        return "unknown"
+        return "none"
     
     def is_confident_counting_gesture(self, gesture_type, student_id):
         """Determine if counting gesture is deliberate and confident."""
@@ -973,6 +983,7 @@ def main():
     frame_idx = 0
     last_detections = []
     last_handface_violations = []
+    last_handface_overlay_data = []
     
     # YOLO async threading variables
     yolo_lock = threading.Lock()
@@ -1038,6 +1049,7 @@ def main():
             if frame_idx % MEDIAPIPE_PROCESS_EVERY == 0:
                 handface_violations, handface_overlay_data = handface_detector.detect(frame)
                 last_handface_violations = handface_violations
+                last_handface_overlay_data = handface_overlay_data
             
             # Process YOLO detections for alerts
             for detection in last_detections:
@@ -1046,6 +1058,30 @@ def main():
                     rule = DETECTION_RULES[category]
                     conf = detection["conf"]
                     bbox = detection["bbox"]
+                    
+                    # Logic for Paper Passing: only alert if the paper is physically passed away from personal space
+                    if category == "paper" and last_handface_overlay_data:
+                        paper_cx = (bbox[0] + bbox[2]) / 2.0
+                        frame_w = frame.shape[1]
+                        
+                        is_passing = True
+                        faces_lms = [d["landmarks"] for d in last_handface_overlay_data if d["type"] == "face"]
+                        
+                        for face_lm in faces_lms:
+                            xs = [lm.x * frame_w for lm in face_lm]
+                            face_x = np.mean(xs)
+                            face_w_px = max(xs) - min(xs)
+                            
+                            # Personal space radius: enough to cover writing bounds in front of the individual
+                            personal_space_radius = max(face_w_px * 2.5, frame_w * 0.15)
+                            
+                            # If paper is inside someone's personal horizontal bounds, it's their own paper.
+                            if abs(paper_cx - face_x) < personal_space_radius:
+                                is_passing = False
+                                break
+                                
+                        if not is_passing:
+                            continue # Ignore, they are just using their own paper
                     
                     if conf >= rule.min_conf:
                         if tracker.record(category):
