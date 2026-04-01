@@ -435,4 +435,54 @@ class SeatingPlan(MongoModel):
         except:
             return False
 
+    def duplicate_seating_plan(self, plan_id):
+        """Duplicate a seating plan but strip out assigned students"""
+        try:
+            plan = self.find_by_id(plan_id)
+            if not plan:
+                return None
+            
+            # Remove _id and id so mongo generates a new one
+            if '_id' in plan:
+                del plan['_id']
+            if 'id' in plan:
+                del plan['id']
+                
+            # Clear session bindings
+            plan['exam_session_id'] = None
+            if 'assigned_session_id' in plan:
+                plan['assigned_session_id'] = None
+            if 'assigned_session_name' in plan:
+                plan['assigned_session_name'] = None
+            if 'is_assigned' in plan:
+                plan['is_assigned'] = False
+            
+            # Clear student data from seats
+            for seat in plan.get('seats', []):
+                if 'student_name' in seat:
+                    seat['student_name'] = ''
+                if 'studentName' in seat:
+                    seat['studentName'] = ''
+                if 'roll_number' in seat:
+                    seat['roll_number'] = ''
+                if 'rollNumber' in seat:
+                    seat['rollNumber'] = ''
+                if 'occupied' in seat:
+                    seat['occupied'] = False
+                
+            # Update name
+            plan['classroom_name'] = f"{plan.get('classroom_name', 'Plan')} (Copy)"
+            
+            # Clear timestamps and occupied count
+            plan['occupied_seats'] = 0
+            plan['created_at'] = datetime.utcnow()
+            plan['updated_at'] = datetime.utcnow()
+            
+            result = self.collection.insert_one(plan)
+            plan['_id'] = result.inserted_id
+            return self.to_dict(plan)
+        except Exception as e:
+            print(f"Error duplicating plan: {e}")
+            return None
+
 

@@ -175,6 +175,14 @@ const adminService = {
     return response.data;
   },
 
+  /**
+   * Duplicate a seating plan
+   */
+  duplicateSeatingPlan: async (planId) => {
+    const response = await apiClient.post(`/admin/seating-plans/${planId}/duplicate`);
+    return response.data;
+  },
+
   // ========== EXAM SESSION SEATING PLANS WORKFLOW ==========
 
   /**

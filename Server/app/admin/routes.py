@@ -1,4 +1,4 @@
-﻿from flask import request, jsonify, current_app
+from flask import request, jsonify, current_app
 
 from flask_jwt_extended import jwt_required, get_jwt_identity
 
@@ -1833,6 +1833,68 @@ def delete_seating_plan(plan_id):
     except Exception as e:
 
         current_app.logger.error(f"Delete seating plan error: {str(e)}")
+
+        return jsonify({'message': 'Internal server error'}), 500
+
+
+
+@bp.route('/seating-plans/<plan_id>/duplicate', methods=['POST'])
+
+@jwt_required()
+
+def duplicate_seating_plan(plan_id):
+
+    """Admin-only endpoint to duplicate an existing seating plan"""
+
+    try:
+
+        current_user, error_response, status_code = require_admin()
+
+        if error_response:
+
+            return error_response, status_code
+
+            
+
+        models = get_models()
+
+        seating_plan_model = models['seating_plan']
+
+        
+
+        # Check if plan exists
+
+        plan = seating_plan_model.find_by_id(plan_id)
+
+        if not plan:
+
+            return jsonify({'message': 'Seating plan not found'}), 404
+
+            
+
+        # Duplicate plan
+
+        new_plan = seating_plan_model.duplicate_seating_plan(plan_id)
+
+        if new_plan:
+
+            return jsonify({
+
+                'message': 'Seating plan duplicated successfully',
+
+                'plan': new_plan
+
+            }), 201
+
+        else:
+
+            return jsonify({'message': 'Failed to duplicate seating plan'}), 500
+
+            
+
+    except Exception as e:
+
+        current_app.logger.error(f"Duplicate seating plan error: {str(e)}")
 
         return jsonify({'message': 'Internal server error'}), 500
 

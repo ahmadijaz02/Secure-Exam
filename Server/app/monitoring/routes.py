@@ -137,6 +137,22 @@ student_head_turn_tracker = {}   # { student_key: [timestamp, ...] }
 EMAIL_ALERT_COOLDOWN_SECONDS = 20
 last_email_sent_at = {}
 
+# ---------------------------------------------------------------------------
+# In-memory seating plan cache — avoids a MongoDB round-trip on every alert.
+# ---------------------------------------------------------------------------
+_seat_cache = {}        # { session_id: {'seats': [...], 'fetched_at': float} }
+_SEAT_CACHE_TTL = 60.0  # seconds before re-fetching from DB
+
+# ---------------------------------------------------------------------------
+# Last confirmed student per session — used to attribute behaviour alerts
+# (HEAD_DOWN, HAND_SIGNAL …) that carry no real bounding box.
+# A confirmation is only set when a hard YOLO object detection (phone, watch,
+# paper) successfully resolves to a specific seat with high confidence.
+# It expires after 30 s to avoid stale attribution.
+# ---------------------------------------------------------------------------
+_last_confirmed_student = {}   # { session_id: {'student': dict, 'ts': float} }
+_LAST_CONFIRMED_TTL = 30.0     # seconds
+
 
 def _send_alert_email_async(app_obj, exam_session_id, reason, timestamp, filename, student_name, roll_number, seat_number, head_turn_escalated, head_turn_count, window_seconds):
     """Send alert email in a background thread to avoid blocking frame stream I/O."""
@@ -222,123 +238,178 @@ def get_alert_category(reason):
     return 'object' if reason in object_alerts else 'behavior'
 
 
-def resolve_student_from_detection(app, exam_session_id, norm_x, norm_y):
-    """Look up the student nearest to a normalised detection coordinate.
+def _get_cached_seats(app, exam_session_id):
+    """Return flat list of assigned seats for the session, using in-memory cache.
 
-    The function iterates over all seating plans linked to the active exam
-    session (via the ``classrooms`` array) and finds the seat whose normalised
-    position is closest to (norm_x, norm_y).
-
-    **Perspective-aware matching:**  In a typical exam-hall camera setup the
-    camera is mounted at one end of the room looking across rows of desks.
-    Objects that are physically far from the camera appear in the *upper*
-    portion of the frame (small norm_y) while objects close to the camera
-    appear in the *lower* portion (large norm_y).  A fixed Euclidean
-    tolerance therefore doesn't work well — seats far from the camera are
-    packed into a small band of normalised Y while seats nearby spread out.
-
-    To compensate we:
-      1. Use a **wider X-tolerance** than before (seats in a row are spaced
-         more evenly along the horizontal axis).
-      2. Use a **Y-tolerance that scales with the Y position** — tighter at the
-         bottom of the frame (close seats, easy to distinguish) and wider at
-         the top (distant seats, compressed by perspective).
-      3. Apply a **weighted distance** that emphasises Y-axis differences less
-         for the upper half of the frame.
-
-    Args:
-        app: Flask application object (for model access).
-        exam_session_id: ID of the current exam session.
-        norm_x: Detection centre x, normalised 0-1.
-        norm_y: Detection centre y, normalised 0-1.
-
-    Returns:
-        dict with ``student_name``, ``roll_number``, ``seat_number`` if a
-        match is found within tolerance, otherwise ``None``.
+    Builds the list once from MongoDB and refreshes every _SEAT_CACHE_TTL seconds.
+    Each entry is a dict: {seat_number, student_name, roll_number, norm_x, norm_y,
+    plan_id, classroom_name}.
+    Only seats that have a student name AND norm coordinates are included.
     """
-    if not exam_session_id or norm_x is None or norm_y is None:
-        return None
+    now_ts = time.time()
+    cached = _seat_cache.get(exam_session_id)
+    if cached and (now_ts - cached['fetched_at']) < _SEAT_CACHE_TTL:
+        return cached['seats']
 
+    # Re-fetch from DB
     try:
-        session_model = app.exam_session_model
-        seating_plan_model = app.seating_plan_model
-
-        session = session_model.find_by_id(exam_session_id)
+        session = app.exam_session_model.find_by_id(exam_session_id)
         if not session:
-            return None
-
-        classrooms = session.get('classrooms', [])
-        if not classrooms:
-            return None
-
-        # --- Perspective-aware tolerances ---
-        # Base tolerance — applies when the detection is in the lower half of
-        # the frame (close to camera, good spatial separation).
-        BASE_X_TOLERANCE = 0.12
-        BASE_Y_TOLERANCE = 0.10
-
-        # For the upper portion of the frame (far from camera) we allow up to
-        # this much extra tolerance because perspective compresses Y.
-        MAX_EXTRA_Y_TOLERANCE = 0.12  # at norm_y == 0
-
-        # Overall hard cutoff (even with scaling, never match beyond this).
-        HARD_CUTOFF = 0.25
-
-        best_match = None
-        best_dist = float('inf')
-
-        for classroom in classrooms:
+            return []
+        seats_flat = []
+        for classroom in session.get('classrooms', []):
             plan_id = classroom.get('seating_plan_id')
             if not plan_id:
                 continue
-
-            plan = seating_plan_model.find_by_id(plan_id)
+            plan = app.seating_plan_model.find_by_id(plan_id)
             if not plan:
                 continue
-
+            cname = plan.get('classroom_name', '')
+            pid   = plan.get('id', plan_id)
             for seat in plan.get('seats', []):
-                seat_nx = seat.get('norm_x')
-                seat_ny = seat.get('norm_y')
-                student_name = seat.get('student_name', '')
-                roll_number = seat.get('roll_number', '')
-
-                if seat_nx is None or seat_ny is None:
+                nx = seat.get('norm_x')
+                ny = seat.get('norm_y')
+                sname = (seat.get('student_name') or '').strip()
+                if nx is None or ny is None or not sname:
                     continue
-                if not student_name:
-                    continue
+                seats_flat.append({
+                    'seat_number':    seat.get('seat_number', ''),
+                    'student_name':   sname,
+                    'roll_number':    (seat.get('roll_number') or '').strip(),
+                    'norm_x':         nx,
+                    'norm_y':         ny,
+                    'plan_id':        pid,
+                    'classroom_name': cname,
+                })
+        _seat_cache[exam_session_id] = {'seats': seats_flat, 'fetched_at': now_ts}
+        print(f"[SeatingCache] Refreshed: {len(seats_flat)} assigned seat(s) for session {exam_session_id}")
+        return seats_flat
+    except Exception as e:
+        print(f"[SeatingCache] Error building cache: {e}")
+        return []
 
-                dx = abs(seat_nx - norm_x)
-                dy = abs(seat_ny - norm_y)
 
-                # Dynamic Y tolerance: wider when detection is near the top of
-                # the frame (small norm_y) where perspective compresses rows.
-                # Linear interpolation: at norm_y=0 -> base + max_extra,
-                #                       at norm_y=1 -> base
-                effective_y_tol = BASE_Y_TOLERANCE + MAX_EXTRA_Y_TOLERANCE * (1.0 - norm_y)
+def resolve_student_from_detection(app, exam_session_id, norm_x, norm_y,
+                                    is_behaviour_alert=False):
+    """Match a detection to a student in the active seating plan.
 
-                # Quick bounding-box reject before computing full distance
-                if dx > BASE_X_TOLERANCE or dy > effective_y_tol:
-                    continue
+    Object alerts (phone/watch/paper) pass real bounding-box coordinates and
+    are matched using perspective-aware distance.  A successful match is
+    cached as ``_last_confirmed_student`` so subsequent *behaviour* alerts
+    (head-turns, hand-signals — which carry only a synthetic frame-centre
+    bbox) can reuse the most recent confirmed student without misattributing
+    the alert to a randomly-nearest seat.
 
-                # Weighted Euclidean: downweight Y difference for distant
-                # detections (upper frame) by a perspective scale factor.
-                # perspective_weight ranges from 0.5 (top of frame) to 1.0 (bottom).
-                perspective_weight = 0.5 + 0.5 * norm_y
-                dist = math.sqrt(dx ** 2 + (dy * perspective_weight) ** 2)
+    Args:
+        app: Flask application object.
+        exam_session_id: Current exam session ID.
+        norm_x / norm_y: Detection centre, normalised 0-1 (may be None for
+            behaviour alerts emitted without a real bounding box).
+        is_behaviour_alert: True for HEAD_* / HAND_SIGNAL / HEAD_DOWN alerts.
 
-                if dist < best_dist:
-                    best_dist = dist
-                    best_match = {
-                        'student_name': student_name,
-                        'roll_number': roll_number or '',
-                        'seat_number': seat.get('seat_number', ''),
-                        'plan_id': plan.get('id', plan_id),
-                        'classroom_name': plan.get('classroom_name', ''),
-                    }
-
-        if best_match and best_dist <= HARD_CUTOFF:
-            return best_match
+    Returns:
+        dict with student_name, roll_number, seat_number … or None.
+    """
+    if not exam_session_id:
         return None
+
+    try:
+        seats = _get_cached_seats(app, exam_session_id)
+        if not seats:
+            print("[resolve_student] No assigned seats found in session.")
+            return None
+
+        # ------------------------------------------------------------------
+        # CASE 1 — behaviour alert  (HEAD_DOWN / HAND_SIGNAL / HEAD_*).
+        # These alerts are emitted with a synthetic bbox at the frame centre
+        # (norm~0.5, 0.5) which is unreliable for seat matching when multiple
+        # students are present.  Instead we:
+        #   a) Return the cached last-confirmed student (set by a recent YOLO
+        #      object detection) if it is still fresh.
+        #   b) Fall back to plain single-student shortcut.
+        #   c) Otherwise return None — better to show no name than a wrong one.
+        # ------------------------------------------------------------------
+        if is_behaviour_alert or norm_x is None or norm_y is None:
+            # (a) recent YOLO-based confirmation
+            cached = _last_confirmed_student.get(exam_session_id)
+            if cached and (time.time() - cached['ts']) < _LAST_CONFIRMED_TTL:
+                s = cached['student']
+                print(f"[resolve_student] Behaviour alert → last confirmed: {s['student_name']}")
+                return s
+            # (b) only one student in room
+            if len(seats) == 1:
+                print(f"[resolve_student] Single student fallback: {seats[0]['student_name']}")
+                return seats[0]
+            # (c) cannot safely attribute
+            print("[resolve_student] Behaviour alert with no confirmed student cached.")
+            return None
+
+        # ------------------------------------------------------------------
+        # CASE 2 — object alert with real coordinates.
+        # Use Bounding Box Intersection matching for Zone Regions.
+        # If the detection falls inside the box, it's a match.
+        # If no strict intersection, snap to the closest box within a margin.
+        # ------------------------------------------------------------------
+
+        best_match = None
+        best_score = float('inf')  # Lower is better
+
+        for seat in seats:
+            seat_nx = seat['norm_x']
+            seat_ny = seat['norm_y']
+            
+            # Use width/height if available from new drag-to-draw method,
+            # otherwise fallback to default sizes (15% width, 20% height)
+            seat_nw = seat.get('norm_w', 0.15)
+            seat_nh = seat.get('norm_h', 0.20)
+
+            dx = abs(seat_nx - norm_x)
+            dy = abs(seat_ny - norm_y)
+
+            # Are we strictly inside the box?
+            is_inside = (dx <= seat_nw / 2.0) and (dy <= seat_nh / 2.0)
+            
+            # Basic euclidean distance to the center of the zone
+            dist_to_center = math.hypot(dx, dy)
+
+            # Scoring:
+            # - If inside the box, score is heavily negative (always wins over outside)
+            #   We still add dist_to_center so if a point is inside *two* overlapping 
+            #   boxes, the one where it's closer to the center wins.
+            # - If outside the box, we only allow it if it's "close enough" 
+            #   (edge tolerance of 1.5x the box size from center, allowing small misses).
+            if is_inside:
+                score = -100.0 + dist_to_center
+            elif dx <= (seat_nw * 1.5) and dy <= (seat_nh * 1.5):
+                # Outside the strict box, but within a 200% larger margin snapping zone
+                score = dist_to_center
+            else:
+                # Too far from this seat
+                continue
+
+            if score < best_score:
+                best_score = score
+                best_match = seat
+
+        if best_match:
+            # Cache this confirmed match so behaviour alerts can use it
+            _last_confirmed_student[exam_session_id] = {
+                'student': best_match,
+                'ts': time.time(),
+            }
+            score_str = "INSIDE ZONE" if best_score < 0 else f"MARGIN (dist={best_score:.3f})"
+            print(
+                f"[resolve_student] Matched: {best_match['student_name']} "
+                f"(seat {best_match['seat_number']}, {score_str})"
+            )
+            return best_match
+
+        print(
+            f"[resolve_student] No match — norm=({norm_x:.3f},{norm_y:.3f}). "
+            f"Fell outside all seat bounding boxes and margins."
+        )
+        return None
+
     except Exception as e:
         print(f"[resolve_student] Error: {e}")
         return None
@@ -484,7 +555,19 @@ def process_monitor_output(process, socketio_instance, app):
 
                     # Resolve student from seating plan (if coordinates available)
                     exam_session_id = getattr(app, 'current_exam_session_id', None)
-                    student_info = resolve_student_from_detection(app, exam_session_id, norm_x, norm_y)
+                    # Behaviour alerts (head turns, hand signals, head down) use a
+                    # synthetic frame-centre bbox that is unreliable for seat matching.
+                    # Pass the flag so resolve_student uses the cached last-confirmed
+                    # YOLO match instead of guessing from coordinates.
+                    _BEHAVIOUR_ALERT_REASONS = {
+                        'HEAD_LEFT', 'HEAD_RIGHT', 'HEAD_DOWN',
+                        'HAND_SIGNAL', 'HAND_MOUTH', 'SIGN_LANGUAGE_CHEATING'
+                    }
+                    _is_behaviour = reason in _BEHAVIOUR_ALERT_REASONS
+                    student_info = resolve_student_from_detection(
+                        app, exam_session_id, norm_x, norm_y,
+                        is_behaviour_alert=_is_behaviour
+                    )
                     student_name = student_info['student_name'] if student_info else None
                     roll_number = student_info['roll_number'] if student_info else None
                     seat_number = student_info['seat_number'] if student_info else None
@@ -710,6 +793,8 @@ def start_monitoring():
 
         monitoring_active = True
         app.current_exam_session_id = session_id
+        # Clear seat cache so this session gets a fresh fetch immediately
+        _seat_cache.pop(session_id, None)
         session_model.update_session(session_id, {'is_active': True})
 
         server_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
