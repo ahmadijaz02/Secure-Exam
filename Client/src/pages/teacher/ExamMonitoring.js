@@ -3,12 +3,15 @@ import { useNavigate, useParams } from 'react-router-dom';
 import monitoringService from '../../api/services/monitoringService';
 import socketService from '../../utils/socket';
 import { useNotification } from '../../context/notification/NotificationContext';
-import Button from '../../components/ui/Button';
-import Card from '../../components/ui/Card';
 import LoadingSpinner from '../../components/ui/LoadingSpinner';
 
-// Same pattern as FYP: default namespace, "frame" (raw base64) and "log" (string)
 const objectAlertReasons = ['PHONE_DETECTED', 'WATCH_DETECTED', 'PAPER_PASSING'];
+
+const ALERT_ICONS = {
+  PHONE_DETECTED: '📱', WATCH_DETECTED: '⌚', PAPER_PASSING: '📄',
+  HEAD_LEFT: '↩️', HEAD_RIGHT: '↪️', HEAD_DOWN: '⬇️',
+  HAND_SIGNAL: '✋', HAND_MOUTH: '🤫', SIGN_LANGUAGE_CHEATING: '🤟',
+};
 
 const ExamMonitoring = () => {
   const navigate = useNavigate();
@@ -28,6 +31,8 @@ const ExamMonitoring = () => {
   const [isSocketConnected, setIsSocketConnected] = useState(false);
   const [bootElapsedSec, setBootElapsedSec] = useState(0);
   const [alertFilterText, setAlertFilterText] = useState('');
+  const [emailAlertsEnabled, setEmailAlertsEnabled] = useState(true);
+  const [showLogs, setShowLogs] = useState(false);
 
   const videoImgRef = useRef(null);
   const latestFrameRef = useRef(null);
@@ -39,10 +44,8 @@ const ExamMonitoring = () => {
   const bootStartMsRef = useRef(null);
 
   const formatDuration = useCallback((totalSeconds) => {
-    const safeSeconds = Math.max(0, Number(totalSeconds) || 0);
-    const mins = Math.floor(safeSeconds / 60);
-    const secs = safeSeconds % 60;
-    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    const s = Math.max(0, Number(totalSeconds) || 0);
+    return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
   }, []);
 
   const handleFrame = useCallback((data) => {
@@ -52,29 +55,21 @@ const ExamMonitoring = () => {
       latestFrameRef.current = frameData;
       latestFrameTsRef.current = Number.isFinite(frameTs) ? frameTs : null;
       receivedFramesRef.current += 1;
-
       if (!renderScheduledRef.current) {
         renderScheduledRef.current = true;
         requestAnimationFrame(() => {
-          const latestFrame = latestFrameRef.current;
-          if (videoImgRef.current && latestFrame) {
-            videoImgRef.current.src = `data:image/jpeg;base64,${latestFrame}`;
-          }
-          if (latestFrameTsRef.current) {
+          if (videoImgRef.current && latestFrameRef.current)
+            videoImgRef.current.src = `data:image/jpeg;base64,${latestFrameRef.current}`;
+          if (latestFrameTsRef.current)
             setStreamLatencyMs(Math.max(0, Date.now() - latestFrameTsRef.current));
-          }
           renderScheduledRef.current = false;
         });
       }
-
       const now = Date.now();
-      if (!hasFrame) {
-        setHasFrame(true);
-      }
+      if (!hasFrame) setHasFrame(true);
       if (now - lastStatsUpdateRef.current >= 1000) {
-        const fps = receivedFramesRef.current - prevFramesRef.current;
+        setStreamFps(receivedFramesRef.current - prevFramesRef.current);
         prevFramesRef.current = receivedFramesRef.current;
-        setStreamFps(fps);
         setFrameCount(receivedFramesRef.current);
         setLastFrameAt(new Date(now));
         lastStatsUpdateRef.current = now;
@@ -84,26 +79,20 @@ const ExamMonitoring = () => {
 
   const handleAlert = useCallback((payload) => {
     if (!payload || !payload.reason) return;
-    const alertObj = {
-      id: Date.now() + Math.random(),
-      reason: payload.reason,
-      timestamp: payload.timestamp || '',
-      alert_time: payload.alert_time || new Date().toISOString(),
+    setAlerts((prev) => [{
+      id: Date.now() + Math.random(), reason: payload.reason,
+      timestamp: payload.timestamp || '', alert_time: payload.alert_time || new Date().toISOString(),
       filename: payload.filename,
       severity: payload.severity || (objectAlertReasons.includes(payload.reason) ? 'high' : 'low'),
       warning_level: payload.warning_level,
       category: payload.category || (objectAlertReasons.includes(payload.reason) ? 'object' : 'behavior'),
-      student_name: payload.student_name || null,
-      roll_number: payload.roll_number || null,
+      student_name: payload.student_name || null, roll_number: payload.roll_number || null,
       seat_number: payload.seat_number || null,
       head_turn_escalated: payload.head_turn_escalated || false,
       head_turn_count: payload.head_turn_count || null,
-    };
-    setAlerts((prev) => [alertObj, ...prev]);
-    const studentLabel = payload.student_name
-      ? ` — ${payload.student_name} (${payload.roll_number || 'N/A'})`
-      : '';
-    notification.showWarning(`Alert: ${formatAlertReason(payload.reason)}${studentLabel}`);
+    }, ...prev]);
+    const sl = payload.student_name ? ` — ${payload.student_name} (${payload.roll_number || 'N/A'})` : '';
+    notification.showWarning(`Alert: ${formatAlertReason(payload.reason)}${sl}`);
     playAlertSound();
   }, [notification]);
 
@@ -115,322 +104,325 @@ const ExamMonitoring = () => {
 
   useEffect(() => {
     const socket = socketService.joinMonitoring();
-
     const onConnect = () => setIsSocketConnected(true);
     const onDisconnect = () => setIsSocketConnected(false);
-
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
     if (socket.connected) setIsSocketConnected(true);
-
     socket.on('frame', handleFrame);
     socket.on('log', handleLog);
     socket.on('monitoring_alert', handleAlert);
-
+    socket.on('email_alerts_status', (d) => { if (d && typeof d.enabled === 'boolean') setEmailAlertsEnabled(d.enabled); });
     return () => {
-      socket.off('connect', onConnect);
-      socket.off('disconnect', onDisconnect);
-      socket.off('frame', handleFrame);
-      socket.off('log', handleLog);
-      socket.off('monitoring_alert', handleAlert);
+      socket.off('connect', onConnect); socket.off('disconnect', onDisconnect);
+      socket.off('frame', handleFrame); socket.off('log', handleLog);
+      socket.off('monitoring_alert', handleAlert); socket.off('email_alerts_status');
     };
   }, [handleFrame, handleLog, handleAlert]);
 
   useEffect(() => {
-    const fetchStatus = async () => {
-      try {
-        const status = await monitoringService.getMonitoringStatus();
-        setIsMonitoring(Boolean(status?.is_monitoring));
-      } catch (_) {
-        setIsMonitoring(false);
-      }
-    };
-
-    fetchStatus();
+    (async () => { try { const s = await monitoringService.getMonitoringStatus(); setIsMonitoring(Boolean(s?.is_monitoring)); } catch (_) { setIsMonitoring(false); } })();
   }, []);
 
   useEffect(() => {
-    if (!examSessionId) {
-      notification.showError('Missing exam session. Start monitoring from Active Sessions.');
-      navigate('/teacher/sessions');
-    }
+    if (!examSessionId) { notification.showError('Missing exam session.'); navigate('/teacher/sessions'); }
   }, [examSessionId, navigate, notification]);
 
   useEffect(() => {
     if (isMonitoring && !hasFrame) {
-      if (!bootStartMsRef.current) {
-        bootStartMsRef.current = Date.now();
-        setBootElapsedSec(0);
-      }
-
-      const tick = () => {
-        const elapsed = Math.floor((Date.now() - bootStartMsRef.current) / 1000);
-        setBootElapsedSec(Math.max(0, elapsed));
-      };
-
-      tick();
-      const timerId = setInterval(tick, 1000);
-      return () => clearInterval(timerId);
+      if (!bootStartMsRef.current) { bootStartMsRef.current = Date.now(); setBootElapsedSec(0); }
+      const tick = () => setBootElapsedSec(Math.max(0, Math.floor((Date.now() - bootStartMsRef.current) / 1000)));
+      tick(); const id = setInterval(tick, 1000); return () => clearInterval(id);
     }
-
-    bootStartMsRef.current = null;
-    setBootElapsedSec(0);
-    return undefined;
+    bootStartMsRef.current = null; setBootElapsedSec(0);
   }, [isMonitoring, hasFrame]);
 
   const stopMonitoring = async () => {
     try {
       setIsLoading(true);
       await monitoringService.stopMonitoring(examSessionId);
-      setIsMonitoring(false);
-      latestFrameRef.current = null;
-      setHasFrame(false);
-      setFrameCount(0);
-      setLastFrameAt(null);
-      notification.showSuccess('Camera stopped');
-    } catch (error) {
-      notification.showError(error.message || 'Failed to stop monitoring');
-    } finally {
-      setIsLoading(false);
-    }
+      setIsMonitoring(false); latestFrameRef.current = null; setHasFrame(false); setFrameCount(0); setLastFrameAt(null);
+      notification.showSuccess('Monitoring stopped');
+    } catch (e) { notification.showError(e.message || 'Failed to stop'); }
+    finally { setIsLoading(false); }
   };
 
-  const formatAlertReason = (reason) => {
-    const map = {
-      PHONE_DETECTED: 'Phone Detected',
-      WATCH_DETECTED: 'Watch Detected',
-      HAND_MOUTH: 'Hand Near Mouth',
-      SIGN_LANGUAGE_CHEATING: 'Sign Language Cheating',
-      HEAD_LEFT: 'Head Looking Left',
-      HEAD_RIGHT: 'Head Looking Right',
-      PAPER_PASSING: 'Paper Passing'
-    };
-    return map[reason] || reason;
-  };
-
-  const getAlertSeverity = (reason) => {
-    return objectAlertReasons.includes(reason) ? 'high' : 'low';
-  };
+  const formatAlertReason = (reason) => ({
+    PHONE_DETECTED: 'Phone Detected', WATCH_DETECTED: 'Watch Detected',
+    HAND_MOUTH: 'Hand Near Mouth', SIGN_LANGUAGE_CHEATING: 'Sign Language',
+    HEAD_LEFT: 'Head Turn Left', HEAD_RIGHT: 'Head Turn Right',
+    HEAD_DOWN: 'Head Down', HAND_SIGNAL: 'Hand Signal', PAPER_PASSING: 'Paper Passing',
+  }[reason] || reason);
 
   const filteredAlerts = useMemo(() => {
     if (!alertFilterText.trim()) return alerts;
-    const lower = alertFilterText.toLowerCase();
-    return alerts.filter(a =>
-      (a.student_name && a.student_name.toLowerCase().includes(lower)) ||
-      (a.roll_number && a.roll_number.toLowerCase().includes(lower)) ||
-      (a.reason && a.reason.toLowerCase().includes(lower))
-    );
+    const l = alertFilterText.toLowerCase();
+    return alerts.filter(a => (a.student_name?.toLowerCase().includes(l)) || (a.roll_number?.toLowerCase().includes(l)) || (a.reason?.toLowerCase().includes(l)));
   }, [alerts, alertFilterText]);
+
+  const alertStats = useMemo(() => {
+    const high = alerts.filter(a => (a.severity || (objectAlertReasons.includes(a.reason) ? 'high' : 'low')) === 'high').length;
+    return { total: alerts.length, high, low: alerts.length - high };
+  }, [alerts]);
 
   const playAlertSound = () => {
     try {
       const ctx = new (window.AudioContext || window.webkitAudioContext)();
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.frequency.value = 800;
-      gain.gain.setValueAtTime(0.3, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.5);
-      osc.start(ctx.currentTime);
-      osc.stop(ctx.currentTime + 0.5);
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.connect(g); g.connect(ctx.destination); o.frequency.value = 800;
+      g.gain.setValueAtTime(0.3, ctx.currentTime); g.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.5);
+      o.start(ctx.currentTime); o.stop(ctx.currentTime + 0.5);
     } catch (_) {}
   };
 
+  const toggleEmailAlerts = useCallback((e) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    setEmailAlertsEnabled((prev) => {
+      const newVal = !prev;
+      socketService.emitMonitoring('toggle_email_alerts', { enabled: newVal });
+      return newVal;
+    });
+  }, []);
+
+  const getTimeSince = (d) => {
+    try { const diff = Math.floor((Date.now() - new Date(d).getTime()) / 1000); if (diff < 60) return `${diff}s ago`; if (diff < 3600) return `${Math.floor(diff / 60)}m ago`; return new Date(d).toLocaleTimeString(); } catch (_) { return ''; }
+  };
+
+  /* ========== Pill badge component ========== */
+  const Pill = ({ color, children, pulse, className = '' }) => {
+    const colorMap = {
+      green: 'bg-emerald-50 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-400 ring-emerald-200/80 dark:ring-emerald-800/60',
+      amber: 'bg-amber-50 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400 ring-amber-200/80 dark:ring-amber-800/60',
+      indigo: 'bg-indigo-50 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-400 ring-indigo-200/80 dark:ring-indigo-800/60',
+      blue: 'bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-400 ring-blue-200/80 dark:ring-blue-800/60',
+      gray: 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400 ring-gray-200/80 dark:ring-gray-700/60',
+      red: 'bg-red-50 dark:bg-red-950/40 text-red-700 dark:text-red-400 ring-red-200/80 dark:ring-red-800/60',
+    };
+    const dotColor = { green: 'bg-emerald-500', amber: 'bg-amber-500', indigo: 'bg-indigo-500', blue: 'bg-blue-500', gray: 'bg-gray-400', red: 'bg-red-500' };
+    return (
+      <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold ring-1 ${colorMap[color] || colorMap.gray} ${className}`}>
+        {pulse !== undefined && <span className={`w-1.5 h-1.5 rounded-full ${dotColor[color] || dotColor.gray} ${pulse ? 'animate-pulse' : ''}`} />}
+        {children}
+      </span>
+    );
+  };
+
   return (
-    <div className="min-h-screen bg-gray-50 dark:bg-gray-900 p-3 sm:p-4 lg:p-6">
-      <div className="max-w-7xl mx-auto">
-        <div className="mb-6 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-          <div>
-            <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Live Monitoring</h1>
-            <p className="text-gray-600 dark:text-gray-400 mt-1">Real-time exam monitoring with AI detection</p>
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-gray-50 to-blue-50/30 dark:from-gray-950 dark:via-gray-900 dark:to-slate-950 p-3 sm:p-5">
+      <div className="max-w-[1680px] mx-auto space-y-4">
+
+
+
+        {/* ─── Control Bar ─── */}
+        <div className="bg-white/80 dark:bg-gray-800/60 backdrop-blur-xl rounded-2xl border border-gray-200/60 dark:border-gray-700/40 shadow-sm">
+          <div className="px-4 py-3 flex flex-wrap items-center justify-between gap-3">
+            {/* Left pills */}
+            <div className="flex flex-wrap items-center gap-2">
+              <Pill color={isSocketConnected ? 'green' : 'amber'} pulse={isSocketConnected}>
+                {isSocketConnected ? 'Connected' : 'Connecting...'}
+              </Pill>
+              {isMonitoring && <Pill color="indigo" pulse>Active</Pill>}
+              {isMonitoring && (
+                <button onClick={toggleEmailAlerts} className="transition-all hover:scale-105 active:scale-95">
+                  <Pill color={emailAlertsEnabled ? 'blue' : 'gray'} className="cursor-pointer">
+                    {emailAlertsEnabled ? '📧 Email ON' : '🔕 Email OFF'}
+                    <span className={`ml-1 relative flex w-7 h-3.5 rounded-full transition-colors ${emailAlertsEnabled ? 'bg-blue-400/40 dark:bg-blue-500/30' : 'bg-gray-300 dark:bg-gray-600'}`}>
+                      <span className={`absolute top-0.5 w-2.5 h-2.5 rounded-full bg-white shadow transition-transform ${emailAlertsEnabled ? 'translate-x-3.5' : 'translate-x-0.5'}`} />
+                    </span>
+                  </Pill>
+                </button>
+              )}
+            </div>
+            {/* Right action */}
+            <div>
+              {!isMonitoring ? (
+                <button onClick={() => navigate('/teacher/sessions')} disabled={isLoading}
+                  className="px-4 py-2 rounded-xl text-xs font-semibold text-white bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 shadow-md shadow-indigo-500/20 transition-all hover:shadow-lg disabled:opacity-50">
+                  Go to Active Sessions →
+                </button>
+              ) : (
+                <button onClick={stopMonitoring} disabled={isLoading}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-semibold text-white bg-gradient-to-r from-red-500 to-rose-600 hover:from-red-600 hover:to-rose-700 shadow-md shadow-red-500/20 transition-all hover:shadow-lg disabled:opacity-50">
+                  {isLoading ? <LoadingSpinner size="sm" /> : <>
+                    <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>
+                    Stop
+                  </>}
+                </button>
+              )}
+            </div>
           </div>
-          <Button variant="secondary" className="w-full sm:w-auto" onClick={() => navigate(-1)}>Back</Button>
+
+          {/* Stats strip */}
+          {isMonitoring && (
+            <div className="border-t border-gray-100 dark:border-gray-700/40 px-4 py-2 flex flex-wrap items-center gap-x-5 gap-y-1 text-[11px] text-gray-400 dark:text-gray-500">
+              <span>Frames: <b className="text-gray-600 dark:text-gray-300">{frameCount.toLocaleString()}</b></span>
+              <span>FPS: <b className={streamFps >= 10 ? 'text-emerald-600 dark:text-emerald-400' : streamFps >= 5 ? 'text-amber-600' : 'text-red-500'}>{streamFps}</b></span>
+              {streamLatencyMs !== null && <span>Latency: <b className={streamLatencyMs < 200 ? 'text-emerald-600 dark:text-emerald-400' : 'text-amber-600'}>{streamLatencyMs}ms</b></span>}
+              {!hasFrame && isMonitoring && <span>Boot: <b className="text-gray-600 dark:text-gray-300">{formatDuration(bootElapsedSec)}</b></span>}
+              {lastFrameAt && <span>Last: <b className="text-gray-600 dark:text-gray-300">{lastFrameAt.toLocaleTimeString()}</b></span>}
+              {alertStats.total > 0 && <span className="ml-auto">Alerts: <b className="text-gray-600 dark:text-gray-300">{alertStats.total}</b>{alertStats.high > 0 && <b className="text-red-500 ml-1">({alertStats.high} critical)</b>}</span>}
+            </div>
+          )}
         </div>
 
-        <Card className="mb-6">
-          <div className="p-4 sm:p-6">
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-              <div className="min-w-0">
-                <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">Camera Control</h2>
-                <p className="text-sm text-gray-600 dark:text-gray-400 break-words">
-                  {isSocketConnected ? (
-                    <span className="text-green-600 dark:text-green-400">● Live feed connected</span>
-                  ) : (
-                    <span className="text-amber-600 dark:text-amber-400">○ Connecting...</span>
-                  )}
-                  {systemStatus ? ` • ${systemStatus}` : ''}
-                </p>
+        {/* ─── Main Content: Feed + Alerts ─── */}
+        <div className="grid grid-cols-1 xl:grid-cols-12 gap-4 items-start">
+
+          {/* ── Video Feed Column ── */}
+          <div className="xl:col-span-8 space-y-4">
+            <div className="bg-white/80 dark:bg-gray-800/60 backdrop-blur-xl rounded-2xl border border-gray-200/60 dark:border-gray-700/40 shadow-sm overflow-hidden">
+              {/* Feed header */}
+              <div className="px-4 py-2.5 border-b border-gray-100 dark:border-gray-700/40 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-violet-500 to-indigo-600 flex items-center justify-center">
+                    <svg className="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+                  </div>
+                  <span className="text-sm font-bold text-gray-800 dark:text-white">Video Feed</span>
+                </div>
+                {hasFrame && <Pill color="green" pulse>Streaming</Pill>}
               </div>
-              <div className="flex gap-3 w-full sm:w-auto">
-                {!isMonitoring ? (
-                  <Button
-                    onClick={() => navigate('/teacher/sessions')}
-                    disabled={isLoading}
-                    variant="secondary"
-                    className="w-full sm:w-auto"
-                  >
-                    Go to Active Sessions
-                  </Button>
-                ) : (
-                  <Button onClick={stopMonitoring} disabled={isLoading} variant="danger" className="w-full sm:w-auto">
-                    {isLoading ? <LoadingSpinner size="sm" /> : 'Stop Monitoring'}
-                  </Button>
-                )}
+              {/* Feed viewport */}
+              <div className="p-2.5">
+                <div className="relative w-full bg-gray-950 rounded-xl overflow-hidden aspect-video flex items-center justify-center min-h-[260px] sm:min-h-[340px] lg:min-h-[420px]">
+                  {hasFrame ? (
+                    <>
+                      <img ref={videoImgRef} src="" alt="Live feed" className="block w-full h-full object-cover rounded-xl" />
+                    </>
+                  ) : (
+                    <div className="text-center p-6">
+                      <div className="w-16 h-16 mx-auto mb-3 rounded-2xl bg-gray-800/80 flex items-center justify-center">
+                        <svg className="w-8 h-8 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
+                      </div>
+                      <p className="text-gray-500 text-sm font-medium">{isMonitoring ? 'Initializing camera...' : 'No active session'}</p>
+                      {isMonitoring && (
+                        <div className="mt-2 flex items-center justify-center gap-1.5 text-gray-600 text-xs">
+                          <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>
+                          {formatDuration(bootElapsedSec)}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
-            {isMonitoring && (
-              <div className="mt-4 flex items-center gap-2">
-                <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse" />
-                <span className="text-sm text-green-600 dark:text-green-400 font-medium">Monitoring Active</span>
-              </div>
-            )}
-            {!isMonitoring && (
-              <div className="mt-4 text-sm text-gray-600 dark:text-gray-400">
-                Start a session from Active Sessions to begin monitoring.
-              </div>
-            )}
-          </div>
-        </Card>
 
-        <div className="grid grid-cols-1 xl:grid-cols-3 gap-6 items-start">
-          <Card className="min-w-0 overflow-hidden xl:col-span-2">
-            <div className="p-4 sm:p-6">
-              <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">Live Video Feed</h2>
-              {isMonitoring && (
-                <p className="text-xs text-gray-500 dark:text-gray-400 mb-2">
-                  Frames: {frameCount}
-                  {` • FPS: ${streamFps}`}
-                  {streamLatencyMs !== null ? ` • Latency: ${streamLatencyMs}ms` : ''}
-                  {!hasFrame ? ` • Boot: ${formatDuration(bootElapsedSec)}` : ''}
-                  {lastFrameAt ? ` • Last: ${lastFrameAt.toLocaleTimeString()}` : ''}
-                </p>
+            {/* ── System Logs (collapsible) ── */}
+            <div className="bg-white/80 dark:bg-gray-800/60 backdrop-blur-xl rounded-2xl border border-gray-200/60 dark:border-gray-700/40 shadow-sm overflow-hidden">
+              <button onClick={() => setShowLogs(!showLogs)} className="w-full px-4 py-2.5 flex items-center justify-between hover:bg-gray-50/60 dark:hover:bg-gray-700/20 transition-colors">
+                <div className="flex items-center gap-2">
+                  <div className="w-6 h-6 rounded-md bg-gradient-to-br from-gray-400 to-slate-500 flex items-center justify-center">
+                    <svg className="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16m-7 6h7" /></svg>
+                  </div>
+                  <span className="text-xs font-bold text-gray-700 dark:text-gray-300">System Logs</span>
+                  <span className="text-[10px] text-gray-400 bg-gray-100 dark:bg-gray-700 px-1.5 py-0.5 rounded-full font-medium">{logs.length}</span>
+                </div>
+                <svg className={`w-3.5 h-3.5 text-gray-400 transition-transform duration-200 ${showLogs ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+              </button>
+              {showLogs && (
+                <div className="border-t border-gray-100 dark:border-gray-700/40 max-h-[200px] overflow-y-auto p-2.5 space-y-0.5 font-mono text-[11px]">
+                  {logs.length === 0 ? (
+                    <p className="text-gray-400 py-4 text-center text-xs">{isSocketConnected ? 'Waiting for logs…' : 'Connecting...'}</p>
+                  ) : logs.slice(0, 50).map((log, i) => (
+                    <div key={i} className={`px-2.5 py-1 rounded-lg leading-relaxed ${
+                      log.includes('ALERT:') ? 'bg-amber-50/80 dark:bg-amber-950/20 text-amber-700 dark:text-amber-400' :
+                      log.includes('ERROR') ? 'bg-red-50/80 dark:bg-red-950/20 text-red-600 dark:text-red-400' :
+                      'text-gray-500 dark:text-gray-500 hover:bg-gray-50 dark:hover:bg-gray-800/40'
+                    }`}>{log}</div>
+                  ))}
+                </div>
               )}
-              <div className="relative w-full max-w-full bg-black rounded-lg overflow-hidden aspect-video flex items-center justify-center min-h-[300px] sm:min-h-[380px] lg:min-h-[460px]">
-                {hasFrame ? (
-                  <>
-                    <img
-                      ref={videoImgRef}
-                      src=""
-                      alt="Live feed"
-                      className="block w-full h-full max-w-full object-cover rounded-lg"
-                      style={{ background: '#222' }}
-                    />
-                    <div className="absolute top-2 left-2 px-2 py-1 bg-green-500/90 text-white text-xs font-semibold rounded-full flex items-center gap-1">
-                      <div className="w-2 h-2 bg-white rounded-full animate-pulse" />
-                      LIVE
+            </div>
+          </div>
+
+          {/* ── Alerts Sidebar ── */}
+          <div className="xl:col-span-4">
+            <div className="bg-white/80 dark:bg-gray-800/60 backdrop-blur-xl rounded-2xl border border-gray-200/60 dark:border-gray-700/40 shadow-sm overflow-hidden xl:sticky xl:top-4">
+              {/* Alerts header */}
+              <div className="px-4 py-3 border-b border-gray-100 dark:border-gray-700/40">
+                <div className="flex items-center justify-between mb-2.5">
+                  <div className="flex items-center gap-2">
+                    <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-red-500 to-rose-600 flex items-center justify-center shadow-sm shadow-red-500/20">
+                      <svg className="w-3.5 h-3.5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" /></svg>
                     </div>
-                    <div className="absolute top-2 right-2 px-2 py-1 rounded bg-black/60 text-white text-xs">
-                      FPS: {streamFps}
-                      {streamLatencyMs !== null ? ` • Latency: ${streamLatencyMs}ms` : ' • Latency: --'}
-                    </div>
-                  </>
-                ) : (
-                  <div className="text-gray-500 text-center p-4">
-                    <svg className="w-16 h-16 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                    </svg>
-                    <p>{isMonitoring ? 'Waiting for video feed...' : 'Click Start Monitoring to begin'}</p>
-                    {isMonitoring && (
-                      <p className="mt-2 text-sm text-gray-400">
-                        Boot Timer: {formatDuration(bootElapsedSec)}
-                      </p>
+                    <span className="text-sm font-bold text-gray-800 dark:text-white">Alerts</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    {alertStats.high > 0 && <Pill color="red">{alertStats.high} Critical</Pill>}
+                    {alertStats.total > 0 && (
+                      <span className="text-[10px] font-bold text-gray-400 bg-gray-100 dark:bg-gray-700 px-2 py-0.5 rounded-full">{alertStats.total}</span>
                     )}
                   </div>
-                )}
+                </div>
+                {/* Search */}
+                <div className="relative">
+                  <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>
+                  <input type="text" placeholder="Search alerts..." value={alertFilterText} onChange={(e) => setAlertFilterText(e.target.value)}
+                    className="w-full pl-8 pr-3 py-1.5 rounded-lg border border-gray-200 dark:border-gray-700 bg-gray-50/80 dark:bg-gray-900/40 text-xs text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-400 transition" />
+                </div>
               </div>
-            </div>
-          </Card>
 
-          <Card className="min-w-0">
-            <div className="p-4 sm:p-6">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-4 gap-2">
-                <h2 className="text-xl font-semibold text-gray-900 dark:text-white">Alerts ({alerts.length})</h2>
-                <input
-                  type="text"
-                  placeholder="Filter alerts..."
-                  value={alertFilterText}
-                  onChange={(e) => setAlertFilterText(e.target.value)}
-                  className="w-full sm:w-auto rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-3 py-1.5 text-sm text-gray-900 dark:text-gray-100"
-                />
-              </div>
-              <div className="space-y-3 max-h-[50vh] lg:max-h-[500px] overflow-y-auto">
+              {/* Alert list */}
+              <div className="max-h-[55vh] lg:max-h-[540px] overflow-y-auto">
                 {alerts.length === 0 ? (
-                  <div className="text-center text-gray-500 py-8">
-                    <svg className="w-12 h-12 mx-auto mb-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                    </svg>
-                    <p>No alerts detected</p>
+                  <div className="text-center py-14 px-6">
+                    <div className="w-14 h-14 mx-auto mb-3 rounded-2xl bg-gradient-to-br from-emerald-50 to-green-100 dark:from-emerald-950/30 dark:to-green-900/20 flex items-center justify-center">
+                      <svg className="w-7 h-7 text-emerald-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m5.618-4.016A11.955 11.955 0 0112 2.944a11.955 11.955 0 01-8.618 3.04A12.02 12.02 0 003 9c0 5.591 3.824 10.29 9 11.622 5.176-1.332 9-6.03 9-11.622 0-1.042-.133-2.052-.382-3.016z" /></svg>
+                    </div>
+                    <p className="text-sm font-semibold text-gray-500 dark:text-gray-400">All clear</p>
+                    <p className="text-[11px] text-gray-400 dark:text-gray-500 mt-0.5">No suspicious activity detected</p>
                   </div>
                 ) : filteredAlerts.length === 0 ? (
-                  <div className="text-center text-gray-500 py-8">
-                    <p>No alerts match your filter.</p>
-                  </div>
+                  <div className="text-center py-10"><p className="text-xs text-gray-400">No matching alerts</p></div>
                 ) : (
-                  filteredAlerts.map((alert) => {
-                    const severity = alert.severity || getAlertSeverity(alert.reason);
-                    const colors = {
-                      high: 'bg-red-100 border-red-500 text-red-800 dark:bg-red-900 dark:text-red-200',
-                      low: 'bg-blue-100 border-blue-500 text-blue-800 dark:bg-blue-900 dark:text-blue-200'
-                    };
-                    return (
-                      <div key={alert.id} className={`p-4 rounded-lg border-l-4 ${colors[severity]}`}>
-                        <div className="flex justify-between items-start">
-                          <div>
-                            <p className="font-semibold">{formatAlertReason(alert.reason)}</p>
-                            {alert.student_name && (
-                              <p className="text-sm font-medium mt-1">
-                                👤 {alert.student_name}
-                                {alert.roll_number ? ` (${alert.roll_number})` : ''}
-                                {alert.seat_number ? ` — Seat ${alert.seat_number}` : ''}
-                              </p>
-                            )}
-                            {alert.head_turn_escalated && (
-                              <p className="text-xs font-bold text-red-700 dark:text-red-300 mt-1">
-                                ⚠️ Escalated: {alert.head_turn_count} head turns in 60s
-                              </p>
-                            )}
-                            <p className="text-sm opacity-75 mt-1">{new Date(alert.alert_time).toLocaleString()}</p>
-                            <span className="inline-block text-xs mt-1 px-2 py-1 rounded bg-slate-200 dark:bg-slate-700 font-bold text-slate-700 dark:text-slate-200">
-                              Level {alert.warning_level || (objectAlertReasons.includes(alert.reason) ? 2 : 1)}
-                            </span>
+                  <div className="divide-y divide-gray-100/80 dark:divide-gray-700/30">
+                    {filteredAlerts.map((alert) => {
+                      const severity = alert.severity || (objectAlertReasons.includes(alert.reason) ? 'high' : 'low');
+                      const level = alert.warning_level || (objectAlertReasons.includes(alert.reason) ? 2 : 1);
+                      const icon = ALERT_ICONS[alert.reason] || '⚠️';
+                      const isHigh = severity === 'high';
+
+                      return (
+                        <div key={alert.id} className={`group px-4 py-3 hover:bg-gray-50/50 dark:hover:bg-gray-700/15 transition-colors ${isHigh ? 'bg-red-50/30 dark:bg-red-950/5' : ''}`}>
+                          <div className="flex items-start gap-2.5">
+                            {/* Icon */}
+                            <div className={`flex-shrink-0 w-8 h-8 rounded-xl flex items-center justify-center text-sm ${
+                              isHigh ? 'bg-red-100 dark:bg-red-900/30' : 'bg-blue-50 dark:bg-blue-900/20'
+                            }`}>{icon}</div>
+                            {/* Content */}
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center justify-between gap-1.5">
+                                <span className="text-xs font-bold text-gray-800 dark:text-white truncate">{formatAlertReason(alert.reason)}</span>
+                                <div className="flex items-center gap-1 flex-shrink-0">
+                                  <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold leading-none ${
+                                    level === 2 ? 'bg-red-500 text-white' : 'bg-gray-200 dark:bg-gray-700 text-gray-600 dark:text-gray-300'
+                                  }`}>L{level}</span>
+                                </div>
+                              </div>
+                              {alert.student_name && (
+                                <p className="text-[11px] font-medium text-gray-600 dark:text-gray-400 mt-0.5 truncate">
+                                  👤 {alert.student_name}
+                                  {alert.roll_number && <span className="text-gray-400"> ({alert.roll_number})</span>}
+                                  {alert.seat_number && <span className="text-gray-400"> • Seat {alert.seat_number}</span>}
+                                </p>
+                              )}
+                              {alert.head_turn_escalated && (
+                                <p className="text-[10px] font-bold text-red-600 dark:text-red-400 mt-0.5">⚠️ Escalated: {alert.head_turn_count}× in 60s</p>
+                              )}
+                              <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">{getTimeSince(alert.alert_time)}</p>
+                            </div>
                           </div>
-                          <span className="text-xs uppercase font-bold px-2 py-1 rounded">{severity}</span>
                         </div>
-                      </div>
-                    );
-                  })
+                      );
+                    })}
+                  </div>
                 )}
               </div>
             </div>
-          </Card>
-        </div>
-
-        <Card className="mt-6">
-          <div className="p-4 sm:p-6">
-            <h2 className="text-xl font-semibold text-gray-900 dark:text-white mb-4">Activity Logs</h2>
-            <div className="space-y-2 max-h-[40vh] lg:max-h-[300px] overflow-y-auto text-sm">
-              {logs.length === 0 ? (
-                <p className="text-gray-500 py-2">
-                  {isSocketConnected ? 'Waiting for logs…' : 'Connecting to server… (ensure backend runs on port 5000)'}
-                </p>
-              ) : (
-                logs.slice(0, 50).map((log, idx) => (
-                  <div
-                    key={idx}
-                    className={`p-2 rounded border-l-2 ${
-                      log.includes('ALERT:') ? 'bg-amber-50 dark:bg-amber-950/30 border-amber-500' :
-                      log.includes('ERROR') ? 'bg-red-50 dark:bg-red-950/30 border-red-500' :
-                      'bg-slate-50 dark:bg-slate-800 border-slate-300'
-                    }`}
-                  >
-                    {log}
-                  </div>
-                ))
-              )}
-            </div>
           </div>
-        </Card>
+        </div>
       </div>
     </div>
   );

@@ -335,6 +335,62 @@ def emit_alert(reason: str, bbox: Tuple[float, float, float, float],
     payload = f"ALERT:{reason}|{timestamp.isoformat()}|{filename}|{cx},{cy},{frame_w},{frame_h}"
     print(payload, flush=True)
 
+FRIENDLY_LABELS = {
+    # Reason-based labels (matching frontend ExamMonitoring.js)
+    "PHONE_DETECTED": "Phone Detected",
+    "WATCH_DETECTED": "Watch Detected",
+    "PAPER_PASSING": "Paper Passing",
+    "HEAD_LEFT": "Head Looking Left",
+    "HEAD_RIGHT": "Head Looking Right",
+    "HEAD_DOWN": "Head Down",
+    "HAND_SIGNAL": "Hand Signal",
+    "HAND_MOUTH": "Hand Near Mouth",
+    "SIGN_LANGUAGE_CHEATING": "Sign Language Cheating",
+    # Raw YOLO class names → unified category labels
+    "mobile phone": "Phone Detected",
+    "cell phone": "Phone Detected",
+    "cellphone": "Phone Detected",
+    "phone": "Phone Detected",
+    "smartphone": "Phone Detected",
+    "smart phone": "Phone Detected",
+    "mobile": "Phone Detected",
+    "mobile device": "Phone Detected",
+    "cell phone in hand": "Phone Detected",
+    "phone in hand": "Phone Detected",
+    "phone between legs": "Phone Detected",
+    "phone in lap": "Phone Detected",
+    "phone on lap": "Phone Detected",
+    "wristwatch": "Watch Detected",
+    "smartwatch": "Watch Detected",
+    "analog watch": "Watch Detected",
+    "wrist watch": "Watch Detected",
+    "paper": "Paper Passing",
+    "sheet of paper": "Paper Passing",
+    "notebook": "Paper Passing",
+    "cheat sheet": "Paper Passing",
+    "document": "Paper Passing",
+    "textbook": "Paper Passing",
+    "printed paper": "Paper Passing",
+    "book": "Paper Passing",
+    "exam paper": "Paper Passing",
+    "answer sheet": "Paper Passing",
+    "question paper": "Paper Passing",
+}
+
+def _get_friendly_label(reason: str, raw_label: Optional[str] = None) -> str:
+    """Return a clean display label matching the frontend UI."""
+    # First try the reason (e.g. PHONE_DETECTED)
+    friendly = FRIENDLY_LABELS.get(reason)
+    if friendly:
+        return friendly
+    # Then try the raw YOLO class label (e.g. "smartphone")
+    if raw_label:
+        friendly = FRIENDLY_LABELS.get(raw_label.lower().strip())
+        if friendly:
+            return friendly
+    # Fallback: title-case the reason
+    return reason.replace("_", " ").title()
+
 def save_evidence(
     frame: np.ndarray,
     reason: str,
@@ -351,26 +407,26 @@ def save_evidence(
     try:
         annotated = frame.copy()
         frame_h, frame_w = annotated.shape[:2]
+
+        # Get the clean, friendly label for display
+        display_label = _get_friendly_label(reason, label)
+
         if bbox is not None and len(bbox) >= 4:
             x1 = int(max(0, min(frame_w - 1, bbox[0])))
             y1 = int(max(0, min(frame_h - 1, bbox[1])))
             x2 = int(max(0, min(frame_w - 1, bbox[2])))
             y2 = int(max(0, min(frame_h - 1, bbox[3])))
             if x2 > x1 and y2 > y1:
-                box_label = (label or reason).upper()
                 color = (0, 0, 255)  # Red for alerts
                 cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
-                if confidence is not None:
-                    box_caption = f"{box_label} {confidence * 100:.0f}%"
-                else:
-                    box_caption = box_label
+                box_caption = display_label.upper()
                 (text_w, text_h), _ = cv2.getTextSize(box_caption, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
                 text_y = max(text_h + 6, y1 - 8)
                 cv2.rectangle(annotated, (x1, text_y - text_h - 6), (x1 + text_w + 8, text_y + 2), color, -1)
                 cv2.putText(annotated, box_caption, (x1 + 4, text_y - 3), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 0, 0), 2, cv2.LINE_AA)
 
-        alert_banner = f"ALERT: {reason}"
-        ts_caption = timestamp.strftime("%Y-%m-%d %H:%M:%S UTC")
+        alert_banner = f"ALERT: {display_label}"
+        ts_caption = timestamp.strftime("%Y-%m-%d %H:%M:%S")
         cv2.rectangle(annotated, (8, 8), (min(frame_w - 8, 430), 62), (0, 0, 0), -1)
         cv2.putText(annotated, alert_banner, (14, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv2.LINE_AA)
         cv2.putText(annotated, ts_caption, (14, 52), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (230, 230, 230), 1, cv2.LINE_AA)
@@ -654,6 +710,16 @@ class HandFaceMovementDetector:
             raw = min(raw, 100)
             student["risk_score"] = raw
             
+            # Compute face bounding box from landmarks (pixel coordinates)
+            face_xs = [lm.x * w for lm in face_lms]
+            face_ys = [lm.y * h for lm in face_lms]
+            face_bbox = (
+                max(0, int(min(face_xs)) - 14),
+                max(0, int(min(face_ys)) - 14),
+                min(w, int(max(face_xs)) + 14),
+                min(h, int(max(face_ys)) + 14),
+            )
+
             # Check for violations
             now = time.time()
             if student["risk_score"] >= self.ALERT_THRESHOLD and now - student.get("last_alert", 0) > self.ALERT_COOLDOWN:
@@ -666,21 +732,24 @@ class HandFaceMovementDetector:
                             "type": "head_turn",
                             "description": f"Head turned {direction} ({yaw:.1f}°)",
                             "student_id": student_id,
-                            "confidence": student["risk_score"] / 100.0
+                            "confidence": student["risk_score"] / 100.0,
+                            "face_bbox": face_bbox,
                         })
                     elif flag == "head_down":
                         violations.append({
                             "type": "head_down", 
                             "description": f"Looking down (pitch {pitch:.1f}°)",
                             "student_id": student_id,
-                            "confidence": student["risk_score"] / 100.0
+                            "confidence": student["risk_score"] / 100.0,
+                            "face_bbox": face_bbox,
                         })
                     elif flag == "hand_signal":
                         violations.append({
                             "type": "hand_signal",
                             "description": f"Suspicious hand gesture: {gesture}",
                             "student_id": student_id,
-                            "confidence": student["risk_score"] / 100.0
+                            "confidence": student["risk_score"] / 100.0,
+                            "face_bbox": face_bbox,
                         })
                 
                 student["last_alert"] = now
@@ -1131,9 +1200,9 @@ def main():
                 
                 if tracker.record(violation_type):
                     timestamp = datetime.now()
-                    # Use frame center as bbox for MediaPipe alerts
                     h, w = frame.shape[:2]
-                    bbox = (w//4, h//4, 3*w//4, 3*h//4)
+                    # Use the real face bounding box from MediaPipe if available
+                    bbox = violation.get("face_bbox", (w//4, h//4, 3*w//4, 3*h//4))
                     snapshot_path = save_evidence(frame, alert_reason, timestamp, bbox)
                     emit_alert(alert_reason, bbox, violation["confidence"], 
                              (w, h), snapshot_path, timestamp)
@@ -1167,8 +1236,8 @@ def main():
             # MediaPipe overlays enabled - showing hand and face detection without bounding boxes
             handface_detector.draw_overlay(frame, handface_overlay_data if frame_idx % MEDIAPIPE_PROCESS_EVERY == 0 else [])
             
-            # Draw FPS
-            cv2.putText(frame, f"FPS: {fps:.1f}", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2, cv2.LINE_AA)
+            # Draw FPS (disabled for cleaner frontend feed)
+            # cv2.putText(frame, f"FPS: {fps:.1f}", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2, cv2.LINE_AA)
             
             # Emit frame
             emit_frame(frame, frame_throttle_state)

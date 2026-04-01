@@ -124,14 +124,19 @@ MONITOR_QUALITY_PRESETS = {
 # Global state
 current_process = None
 monitoring_active = False
+email_alerts_enabled = True  # Toggled by frontend; when False, no emails are sent
 
-# Per-student head-turn tracker.
+# Per-student behaviour escalation trackers.
 # Key: student identifier ("roll_number" or "seat_number"), Value: list of timestamps
-# When a student accumulates HEAD_TURN_ESCALATION_THRESHOLD turns within
-# HEAD_TURN_WINDOW_SECONDS, the alert is escalated to warning level 2.
+# When a student accumulates THRESHOLD occurrences within WINDOW seconds,
+# the alert is escalated to warning level 2.
 HEAD_TURN_WINDOW_SECONDS = 60
 HEAD_TURN_ESCALATION_THRESHOLD = 3
 student_head_turn_tracker = {}   # { student_key: [timestamp, ...] }
+
+HAND_SIGNAL_WINDOW_SECONDS = 60
+HAND_SIGNAL_ESCALATION_THRESHOLD = 3
+student_hand_signal_tracker = {}  # { student_key: [timestamp, ...] }
 
 # Keep email dispatch non-blocking and rate-limited so stdout reader does not stall.
 EMAIL_ALERT_COOLDOWN_SECONDS = 20
@@ -162,6 +167,10 @@ def _send_alert_email_async(app_obj, exam_session_id, reason, timestamp, filenam
             email_key = f"{exam_session_id}:{reason}:{student_name or ''}:{roll_number or ''}:{seat_number or ''}"
             last_sent = last_email_sent_at.get(email_key, 0)
             if now_ts - last_sent < EMAIL_ALERT_COOLDOWN_SECONDS:
+                cooldown_left = int(EMAIL_ALERT_COOLDOWN_SECONDS - (now_ts - last_sent))
+                msg = f"[EMAIL] Skipped sending {reason} alert for {student_name} (cooldown: wait {cooldown_left}s)"
+                print(msg)
+                socketio.emit('log', msg, namespace='/')
                 return
 
             session_model = app_obj.exam_session_model
@@ -175,26 +184,73 @@ def _send_alert_email_async(app_obj, exam_session_id, reason, timestamp, filenam
                     teacher_email = teacher['email']
 
             if not teacher_email:
+                print("[EMAIL] No teacher email found — skipping email send.")
                 return
 
+            # Resolve evidence file to an absolute disk path
+            evidence_abs_path = None
+            if filename:
+                server_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+                suspicious_dir = os.path.join(server_dir, 'suspicious_alerts')
+
+                # filename may already be an absolute path
+                if os.path.isabs(filename) and os.path.isfile(filename):
+                    evidence_abs_path = filename
+                else:
+                    # Normalise: strip leading slashes and 'suspicious_alerts/' prefix
+                    clean = filename.replace('\\', '/').lstrip('/')
+                    if clean.startswith('suspicious_alerts/'):
+                        clean = clean.split('suspicious_alerts/', 1)[1]
+                    candidate = os.path.join(suspicious_dir, clean)
+                    if os.path.isfile(candidate):
+                        evidence_abs_path = candidate
+                    else:
+                        print(f"[EMAIL] Evidence file not found: {candidate}")
+
+            # Build plain-text fallback body
             from app.utils.helpers import send_email_alert
-            email_body = f"Level 2 Warning: {reason} detected at {timestamp}."
+            plain_body = f"Level 2 Warning: {reason} detected at {timestamp}."
             if head_turn_escalated and student_name:
-                email_body = (
+                plain_body = (
                     f"Level 2 Warning: {student_name} (Roll: {roll_number}, Seat: {seat_number}) "
                     f"has turned their head {head_turn_count} times in the last {window_seconds} seconds."
                 )
-            if filename:
-                email_body += f" See evidence: {filename}"
+            if student_name and not head_turn_escalated:
+                plain_body += f"\nStudent: {student_name} (Roll: {roll_number}, Seat: {seat_number})"
+            if evidence_abs_path:
+                plain_body += f"\nEvidence image attached."
+
+            # Build dashboard link
+            frontend_url = os.environ.get('FRONTEND_URL', 'http://localhost:3000')
+            dashboard_url = f"{frontend_url}/teacher/sessions"
+
+            # Subject line
+            subject_parts = [f"🚨 Exam Alert: {reason}"]
+            if student_name:
+                subject_parts.append(f"— {student_name}")
+            if head_turn_escalated:
+                subject_parts.append(f"[ESCALATED]")
+            subject = ' '.join(subject_parts)
 
             send_email_alert(
-                subject=f"Exam Alert: {reason}{' - ' + student_name if student_name else ''}",
-                body=email_body,
-                to_emails=[teacher_email]
+                subject=subject,
+                body=plain_body,
+                to_emails=[teacher_email],
+                attachment_path=evidence_abs_path,
+                reason=reason,
+                timestamp=timestamp,
+                student_name=student_name,
+                roll_number=roll_number,
+                seat_number=seat_number,
+                head_turn_escalated=head_turn_escalated,
+                head_turn_count=head_turn_count,
+                window_seconds=window_seconds,
+                dashboard_url=dashboard_url,
             )
             last_email_sent_at[email_key] = now_ts
+            print(f"[EMAIL] Level 2 alert email dispatched for {reason} to {teacher_email}")
     except Exception as e:
-        print(f"[DEBUG] Async email send failed: {e}")
+        print(f"[EMAIL] Async email send failed: {e}")
 
 
 @socketio.on('connect', namespace='/')
@@ -203,6 +259,7 @@ def handle_default_connect():
     try:
         print("Client connected to default namespace (monitoring)")
         socketio.emit('log', 'Connected to monitoring server', namespace='/')
+        socketio.emit('email_alerts_status', {'enabled': email_alerts_enabled}, namespace='/')
     except Exception as e:
         print(f"Default namespace connect error: {e}")
 
@@ -224,6 +281,33 @@ def handle_monitoring_disconnect():
         print(f"Monitoring socket disconnected: {request.sid}")
     except Exception as e:
         print(f"Monitoring socket disconnect error: {e}")
+
+
+@socketio.on('toggle_email_alerts', namespace='/')
+def handle_toggle_email_alerts(data):
+    """Toggle email alerts on/off from the frontend."""
+    global email_alerts_enabled
+    try:
+        if isinstance(data, dict):
+            enabled = bool(data.get('enabled', True))
+        elif isinstance(data, str):
+            import json
+            try:
+                parsed = json.loads(data)
+                enabled = bool(parsed.get('enabled', True))
+            except:
+                if data.lower() in ('false', '0', 'off'):
+                    enabled = False
+                else:
+                    enabled = True
+        else:
+            enabled = bool(data)
+        
+        email_alerts_enabled = enabled
+        print(f"[EMAIL] Email alerts {'ENABLED' if enabled else 'DISABLED'} by frontend")
+        socketio.emit('email_alerts_status', {'enabled': email_alerts_enabled}, namespace='/')
+    except Exception as e:
+        print(f"Error toggling email alerts: {e}")
 
 
 def get_severity(reason):
@@ -293,18 +377,16 @@ def resolve_student_from_detection(app, exam_session_id, norm_x, norm_y,
                                     is_behaviour_alert=False):
     """Match a detection to a student in the active seating plan.
 
-    Object alerts (phone/watch/paper) pass real bounding-box coordinates and
-    are matched using perspective-aware distance.  A successful match is
-    cached as ``_last_confirmed_student`` so subsequent *behaviour* alerts
-    (head-turns, hand-signals — which carry only a synthetic frame-centre
-    bbox) can reuse the most recent confirmed student without misattributing
-    the alert to a randomly-nearest seat.
+    Both object alerts and behaviour alerts now carry real bounding-box
+    coordinates (behaviour alerts use the MediaPipe face bbox).  We always
+    attempt coordinate-based matching first.  For behaviour alerts, if the
+    coordinate match fails we fall back to the cached last-confirmed student
+    or a single-student shortcut.
 
     Args:
         app: Flask application object.
         exam_session_id: Current exam session ID.
-        norm_x / norm_y: Detection centre, normalised 0-1 (may be None for
-            behaviour alerts emitted without a real bounding box).
+        norm_x / norm_y: Detection centre, normalised 0-1.
         is_behaviour_alert: True for HEAD_* / HAND_SIGNAL / HEAD_DOWN alerts.
 
     Returns:
@@ -320,21 +402,65 @@ def resolve_student_from_detection(app, exam_session_id, norm_x, norm_y,
             return None
 
         # ------------------------------------------------------------------
-        # CASE 1 — behaviour alert  (HEAD_DOWN / HAND_SIGNAL / HEAD_*).
-        # These alerts are emitted with a synthetic bbox at the frame centre
-        # (norm~0.5, 0.5) which is unreliable for seat matching when multiple
-        # students are present.  Instead we:
-        #   a) Return the cached last-confirmed student (set by a recent YOLO
-        #      object detection) if it is still fresh.
-        #   b) Fall back to plain single-student shortcut.
-        #   c) Otherwise return None — better to show no name than a wrong one.
+        # Try coordinate-based matching if we have real coordinates
+        # ------------------------------------------------------------------
+        if norm_x is not None and norm_y is not None:
+            best_match = None
+            best_score = float('inf')
+
+            for seat in seats:
+                seat_nx = seat['norm_x']
+                seat_ny = seat['norm_y']
+
+                seat_nw = seat.get('norm_w', 0.15)
+                seat_nh = seat.get('norm_h', 0.20)
+
+                dx = abs(seat_nx - norm_x)
+                dy = abs(seat_ny - norm_y)
+
+                is_inside = (dx <= seat_nw / 2.0) and (dy <= seat_nh / 2.0)
+                dist_to_center = math.hypot(dx, dy)
+
+                if is_inside:
+                    score = -100.0 + dist_to_center
+                elif dx <= (seat_nw * 1.5) and dy <= (seat_nh * 1.5):
+                    score = dist_to_center
+                else:
+                    continue
+
+                if score < best_score:
+                    best_score = score
+                    best_match = seat
+
+            if best_match:
+                # Cache this confirmed match
+                _last_confirmed_student[exam_session_id] = {
+                    'student': best_match,
+                    'ts': time.time(),
+                }
+                alert_type = "behaviour" if is_behaviour_alert else "object"
+                score_str = "INSIDE ZONE" if best_score < 0 else f"MARGIN (dist={best_score:.3f})"
+                print(
+                    f"[resolve_student] Matched ({alert_type}): {best_match['student_name']} "
+                    f"(seat {best_match['seat_number']}, {score_str})"
+                )
+                return best_match
+
+            # Coordinate match failed — log it
+            print(
+                f"[resolve_student] No coordinate match — norm=({norm_x:.3f},{norm_y:.3f}). "
+                f"Fell outside all seat bounding boxes and margins."
+            )
+
+        # ------------------------------------------------------------------
+        # Fallback for behaviour alerts (or missing coordinates)
         # ------------------------------------------------------------------
         if is_behaviour_alert or norm_x is None or norm_y is None:
             # (a) recent YOLO-based confirmation
             cached = _last_confirmed_student.get(exam_session_id)
             if cached and (time.time() - cached['ts']) < _LAST_CONFIRMED_TTL:
                 s = cached['student']
-                print(f"[resolve_student] Behaviour alert → last confirmed: {s['student_name']}")
+                print(f"[resolve_student] Behaviour alert fallback → last confirmed: {s['student_name']}")
                 return s
             # (b) only one student in room
             if len(seats) == 1:
@@ -344,70 +470,6 @@ def resolve_student_from_detection(app, exam_session_id, norm_x, norm_y,
             print("[resolve_student] Behaviour alert with no confirmed student cached.")
             return None
 
-        # ------------------------------------------------------------------
-        # CASE 2 — object alert with real coordinates.
-        # Use Bounding Box Intersection matching for Zone Regions.
-        # If the detection falls inside the box, it's a match.
-        # If no strict intersection, snap to the closest box within a margin.
-        # ------------------------------------------------------------------
-
-        best_match = None
-        best_score = float('inf')  # Lower is better
-
-        for seat in seats:
-            seat_nx = seat['norm_x']
-            seat_ny = seat['norm_y']
-            
-            # Use width/height if available from new drag-to-draw method,
-            # otherwise fallback to default sizes (15% width, 20% height)
-            seat_nw = seat.get('norm_w', 0.15)
-            seat_nh = seat.get('norm_h', 0.20)
-
-            dx = abs(seat_nx - norm_x)
-            dy = abs(seat_ny - norm_y)
-
-            # Are we strictly inside the box?
-            is_inside = (dx <= seat_nw / 2.0) and (dy <= seat_nh / 2.0)
-            
-            # Basic euclidean distance to the center of the zone
-            dist_to_center = math.hypot(dx, dy)
-
-            # Scoring:
-            # - If inside the box, score is heavily negative (always wins over outside)
-            #   We still add dist_to_center so if a point is inside *two* overlapping 
-            #   boxes, the one where it's closer to the center wins.
-            # - If outside the box, we only allow it if it's "close enough" 
-            #   (edge tolerance of 1.5x the box size from center, allowing small misses).
-            if is_inside:
-                score = -100.0 + dist_to_center
-            elif dx <= (seat_nw * 1.5) and dy <= (seat_nh * 1.5):
-                # Outside the strict box, but within a 200% larger margin snapping zone
-                score = dist_to_center
-            else:
-                # Too far from this seat
-                continue
-
-            if score < best_score:
-                best_score = score
-                best_match = seat
-
-        if best_match:
-            # Cache this confirmed match so behaviour alerts can use it
-            _last_confirmed_student[exam_session_id] = {
-                'student': best_match,
-                'ts': time.time(),
-            }
-            score_str = "INSIDE ZONE" if best_score < 0 else f"MARGIN (dist={best_score:.3f})"
-            print(
-                f"[resolve_student] Matched: {best_match['student_name']} "
-                f"(seat {best_match['seat_number']}, {score_str})"
-            )
-            return best_match
-
-        print(
-            f"[resolve_student] No match — norm=({norm_x:.3f},{norm_y:.3f}). "
-            f"Fell outside all seat bounding boxes and margins."
-        )
         return None
 
     except Exception as e:
@@ -578,8 +640,11 @@ def process_monitor_output(process, socketio_instance, app):
                     # Determine warning level and type
                     object_types = ['PHONE_DETECTED', 'WATCH_DETECTED', 'PAPER_PASSING']
                     head_turn_types = ['HEAD_LEFT', 'HEAD_RIGHT']
-                    head_turn_escalated = False
-                    head_turn_count = 0
+                    hand_signal_types = ['HAND_SIGNAL']
+                    behaviour_escalated = False
+                    escalation_count = 0
+                    escalation_window = 0
+                    escalation_label = ''
 
                     if reason in object_types:
                         warning_level = 2
@@ -593,12 +658,10 @@ def process_monitor_output(process, socketio_instance, app):
                         student_key = roll_number or seat_number or student_name
                         now_ts = time.time()
 
-                        # Append current timestamp
                         if student_key not in student_head_turn_tracker:
                             student_head_turn_tracker[student_key] = []
                         student_head_turn_tracker[student_key].append(now_ts)
 
-                        # Prune entries older than the window
                         cutoff = now_ts - HEAD_TURN_WINDOW_SECONDS
                         student_head_turn_tracker[student_key] = [
                             t for t in student_head_turn_tracker[student_key] if t >= cutoff
@@ -609,19 +672,51 @@ def process_monitor_output(process, socketio_instance, app):
                         if head_turn_count >= HEAD_TURN_ESCALATION_THRESHOLD:
                             warning_level = 2
                             send_email = True
-                            head_turn_escalated = True
+                            behaviour_escalated = True
+                            escalation_count = head_turn_count
+                            escalation_window = HEAD_TURN_WINDOW_SECONDS
+                            escalation_label = 'head turns'
                             print(
                                 f"[Monitor] Head-turn ESCALATED to Level 2 for "
                                 f"{student_name} ({roll_number}) — "
                                 f"{head_turn_count} turns in last {HEAD_TURN_WINDOW_SECONDS}s"
                             )
 
+                    # --- Hand-signal escalation logic ---
+                    if reason in hand_signal_types and student_info:
+                        student_key = roll_number or seat_number or student_name
+                        now_ts = time.time()
+
+                        if student_key not in student_hand_signal_tracker:
+                            student_hand_signal_tracker[student_key] = []
+                        student_hand_signal_tracker[student_key].append(now_ts)
+
+                        cutoff = now_ts - HAND_SIGNAL_WINDOW_SECONDS
+                        student_hand_signal_tracker[student_key] = [
+                            t for t in student_hand_signal_tracker[student_key] if t >= cutoff
+                        ]
+
+                        hand_signal_count = len(student_hand_signal_tracker[student_key])
+
+                        if hand_signal_count >= HAND_SIGNAL_ESCALATION_THRESHOLD:
+                            warning_level = 2
+                            send_email = True
+                            behaviour_escalated = True
+                            escalation_count = hand_signal_count
+                            escalation_window = HAND_SIGNAL_WINDOW_SECONDS
+                            escalation_label = 'hand signals'
+                            print(
+                                f"[Monitor] Hand-signal ESCALATED to Level 2 for "
+                                f"{student_name} ({roll_number}) — "
+                                f"{hand_signal_count} signals in last {HAND_SIGNAL_WINDOW_SECONDS}s"
+                            )
+
                     # Build description with student info
                     description = f"Auto-detected: {reason}"
                     if student_info:
                         description = f"{reason} — {student_name} (Roll: {roll_number}, Seat: {seat_number})"
-                    if head_turn_escalated:
-                        description += f" [ESCALATED: {head_turn_count} head turns in {HEAD_TURN_WINDOW_SECONDS}s]"
+                    if behaviour_escalated:
+                        description += f" [ESCALATED: {escalation_count} {escalation_label} in {escalation_window}s]"
 
                     # Save to DB
                     try:
@@ -642,19 +737,19 @@ def process_monitor_output(process, socketio_instance, app):
                             'alert_time': datetime.now().isoformat(),
                             'filename': filename,
                             'category': get_alert_category(reason),
-                            'severity': 'high' if head_turn_escalated else get_severity(reason),
+                            'severity': 'high' if behaviour_escalated else get_severity(reason),
                             'warning_level': warning_level,
                             'exam_session_id': exam_session_id,
                             'student_name': student_name,
                             'roll_number': roll_number,
                             'seat_number': seat_number,
-                            'head_turn_escalated': head_turn_escalated,
-                            'head_turn_count': head_turn_count if head_turn_escalated else None,
+                            'head_turn_escalated': behaviour_escalated,
+                            'head_turn_count': escalation_count if behaviour_escalated else None,
                         }
                         socketio_instance.emit('log', line, namespace='/')
                         socketio_instance.emit('monitoring_alert', payload, namespace='/monitoring')
                         socketio_instance.emit('monitoring_alert', payload, namespace='/')
-                        if send_email:
+                        if send_email and email_alerts_enabled:
                             try:
                                 threading.Thread(
                                     target=_send_alert_email_async,
@@ -667,9 +762,9 @@ def process_monitor_output(process, socketio_instance, app):
                                         student_name,
                                         roll_number,
                                         seat_number,
-                                        head_turn_escalated,
-                                        head_turn_count,
-                                        HEAD_TURN_WINDOW_SECONDS,
+                                        behaviour_escalated,
+                                        escalation_count,
+                                        escalation_window or HEAD_TURN_WINDOW_SECONDS,
                                     ),
                                     daemon=True,
                                 ).start()
@@ -889,8 +984,9 @@ def stop_monitoring():
                 return jsonify({'error': 'Access denied. Session not assigned to you.'}), 403
 
         monitoring_active = False
-        # Reset per-student head-turn tracker
+        # Reset per-student behaviour escalation trackers
         student_head_turn_tracker.clear()
+        student_hand_signal_tracker.clear()
         if current_process:
             current_process.terminate()
             try:
