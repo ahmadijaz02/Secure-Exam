@@ -206,10 +206,17 @@ HAND_GESTURE_ENABLED = _env_bool_profiled("HAND_GESTURE_ENABLED", True)
 HAND_GESTURE_MIN_CONFIDENCE = _env_float_profiled("HAND_GESTURE_MIN_CONFIDENCE", 0.5)
 HAND_GESTURE_REQUIRE_FRAMES = _env_int_profiled("HAND_GESTURE_REQUIRE_FRAMES", 4)
 
-# Alert configuration (aligned with exam_monitor.py)
-ALERT_CONFIRM_FRAMES = max(1, _env_int("ALERT_CONFIRM_FRAMES", 3))  # Changed from 1 to 3
-OVERLAY_PERSISTENCE_SEC = max(0.0, _env_float("OVERLAY_PERSISTENCE_SEC", 1.5))  # Changed from 0.6 to 1.5
-ALERT_COOLDOWN_SEC = _env_float("ALERT_COOLDOWN_SEC", 3.0)
+# Alert configuration
+ALERT_CONFIRM_FRAMES = max(1, _env_int("ALERT_CONFIRM_FRAMES", 3))
+OVERLAY_PERSISTENCE_SEC = max(0.0, _env_float("OVERLAY_PERSISTENCE_SEC", 1.5))
+
+# Per-type alert cooldowns (seconds). Each type can only fire ONCE per window.
+# These are reduced to allow for easier testing while still preventing massive flooding.
+ALERT_COOLDOWN_SEC        = _env_float("ALERT_COOLDOWN_SEC", 10.0)    # default / phone
+PAPER_ALERT_COOLDOWN_SEC  = _env_float("PAPER_ALERT_COOLDOWN_SEC", 15.0)   # paper passing
+WATCH_ALERT_COOLDOWN_SEC  = _env_float("WATCH_ALERT_COOLDOWN_SEC", 10.0)   # watch
+HEAD_ALERT_COOLDOWN_SEC   = _env_float("HEAD_ALERT_COOLDOWN_SEC", 10.0)    # head turns
+HAND_ALERT_COOLDOWN_SEC   = _env_float("HAND_ALERT_COOLDOWN_SEC", 10.0)    # hand signals
 
 # ---------------------------------------------------------------------------
 # Detection classes
@@ -229,21 +236,21 @@ DETECTION_RULES: Dict[str, DetectionRule] = {
         min_conf=max(GENERAL_DISPLAY_CONF, PHONE_CLASS_MIN_CONF),
         min_area_fraction=0.00004,
         max_area_fraction=0.30,
-        cooldown=ALERT_COOLDOWN_SEC,
+        cooldown=ALERT_COOLDOWN_SEC,          # 30 s
     ),
     "watch": DetectionRule(
         reason="WATCH_DETECTED",
         min_conf=max(GENERAL_DISPLAY_CONF, WATCH_CLASS_MIN_CONF),
         min_area_fraction=0.00004,
         max_area_fraction=0.30,
-        cooldown=ALERT_COOLDOWN_SEC,
+        cooldown=WATCH_ALERT_COOLDOWN_SEC,    # 30 s
     ),
     "paper": DetectionRule(
         reason="PAPER_PASSING",
         min_conf=max(GENERAL_DISPLAY_CONF, PAPER_CLASS_MIN_CONF),
         min_area_fraction=0.00004,
         max_area_fraction=0.30,
-        cooldown=ALERT_COOLDOWN_SEC,
+        cooldown=PAPER_ALERT_COOLDOWN_SEC,    # 45 s — laptop false-positive guard
     ),
 }
 
@@ -379,8 +386,11 @@ def save_evidence(
 # ---------------------------------------------------------------------------
 
 class ViolationTracker:
-    def __init__(self, cooldown: float = 3.0):
+    def __init__(self, cooldown: float = 30.0,
+                 per_type_cooldowns: dict = None):
         self.cooldown = cooldown
+        # Per-type overrides; falls back to self.cooldown if type not listed
+        self._per_type = per_type_cooldowns or {}
         self.counts = {
             "paper_swap": 0,
             "mobile": 0,
@@ -393,8 +403,8 @@ class ViolationTracker:
 
     def record(self, violation: str) -> bool:
         now = time.time()
-        if now - self._last_alert.get(violation, 0) >= self.cooldown:
-            # Initialize count if this is a new violation type
+        effective_cooldown = self._per_type.get(violation, self.cooldown)
+        if now - self._last_alert.get(violation, 0) >= effective_cooldown:
             if violation not in self.counts:
                 self.counts[violation] = 0
             self.counts[violation] += 1
@@ -961,8 +971,19 @@ def open_capture() -> Optional[cv2.VideoCapture]:
 def main():
     log("Starting integrated exam monitoring system...")
     
-    # Initialize violation tracker
-    tracker = ViolationTracker(cooldown=ALERT_COOLDOWN_SEC)
+    # Initialize violation tracker with per-type cooldowns
+    tracker = ViolationTracker(
+        cooldown=ALERT_COOLDOWN_SEC,
+        per_type_cooldowns={
+            "mobile":     ALERT_COOLDOWN_SEC,       # 30 s
+            "watch":      WATCH_ALERT_COOLDOWN_SEC,  # 30 s
+            "paper":      PAPER_ALERT_COOLDOWN_SEC,  # 45 s
+            "paper_swap": PAPER_ALERT_COOLDOWN_SEC,  # 45 s
+            "head_turn":  HEAD_ALERT_COOLDOWN_SEC,   # 20 s
+            "head_down":  HEAD_ALERT_COOLDOWN_SEC,   # 20 s
+            "hand_signal": HAND_ALERT_COOLDOWN_SEC,  # 20 s
+        }
+    )
     
     # Initialize YOLO detector
     yolo = YOLOWorldDetector(YOLO_MODEL_PATH, YOLO_CLASSES + EXTENDED_YOLO_CLASSES)
