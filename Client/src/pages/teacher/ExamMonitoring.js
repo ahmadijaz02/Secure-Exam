@@ -289,7 +289,7 @@ const ExamMonitoring = () => {
                 <div className="relative w-full bg-gray-950 rounded-xl overflow-hidden aspect-video flex items-center justify-center min-h-[260px] sm:min-h-[340px] lg:min-h-[420px]">
                   {hasFrame ? (
                     <>
-                      <img ref={videoImgRef} src="" alt="Live feed" className="block w-full h-full object-cover rounded-xl" />
+                      <img ref={videoImgRef} src="" alt="Live feed" className="block w-full h-full object-contain rounded-xl" />
                     </>
                   ) : (
                     <div className="text-center p-6">

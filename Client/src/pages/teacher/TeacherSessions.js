@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 
 import { useNavigate } from 'react-router-dom';
 
@@ -32,34 +32,7 @@ function TeacherSessions() {
 
   const [stoppingSessionId, setStoppingSessionId] = useState(null);
 
-  const [qualityPreset, setQualityPreset] = useState('low_latency');
   const [cameraMode, setCameraMode] = useState('laptop');
-
-
-
-  const qualityOptions = [
-
-    {
-
-      value: 'onnx_directml',
-
-      label: 'ONNX DirectML',
-
-      helper: 'Use this on systems with GPU support for ONNX Runtime DirectML'
-
-    },
-
-    {
-
-      value: 'low_latency',
-
-      label: 'Low Latency',
-
-      helper: 'Use this on laptops or systems without a compatible GPU'
-
-    },
-
-  ];
 
   const cameraModeOptions = [
     {
@@ -150,13 +123,11 @@ function TeacherSessions() {
 
       setStartingSessionId(sessionId);
 
-      await monitoringService.startMonitoring(sessionId, qualityPreset, null, cameraMode);
-
-      const selectedQuality = qualityOptions.find((option) => option.value === qualityPreset);
+      await monitoringService.startMonitoring(sessionId, null, cameraMode);
 
       const selectedMode = cameraModeOptions.find((option) => option.value === cameraMode);
 
-      addNotification('success', `Monitoring started (${selectedQuality?.label || qualityPreset} / ${selectedMode?.label || cameraMode})`);
+      addNotification('success', `Monitoring started (${selectedMode?.label || cameraMode})`);
 
       navigate(`/teacher/monitoring/${sessionId}`);
 
@@ -218,52 +189,10 @@ function TeacherSessions() {
 
         <Card.Content className="p-4 space-y-6">
 
+
+
           <div className="flex flex-col gap-3">
-
-            <p className="text-sm font-semibold text-gray-900 dark:text-white">Monitoring Quality Preset</p>
-
-            <div className="flex flex-wrap gap-2">
-
-              {qualityOptions.map((option) => {
-
-                const isSelected = qualityPreset === option.value;
-
-                return (
-
-                  <Button
-
-                    key={option.value}
-
-                    variant={isSelected ? 'primary' : 'outline'}
-
-                    size="sm"
-
-                    onClick={() => setQualityPreset(option.value)}
-
-                  >
-
-                    {option.label}
-
-                  </Button>
-
-                );
-
-              })}
-
-            </div>
-
-            <p className="text-xs text-gray-600 dark:text-gray-400">
-
-              {qualityOptions.find((option) => option.value === qualityPreset)?.helper}
-
-            </p>
-
-          </div>
-
-          <div className="flex flex-col gap-3 border-t border-gray-200 dark:border-gray-700 pt-4">
-
             <p className="text-sm font-semibold text-gray-900 dark:text-white">Camera Input Mode</p>
-
             <div className="flex flex-wrap gap-2">
 
               {cameraModeOptions.map((option) => {

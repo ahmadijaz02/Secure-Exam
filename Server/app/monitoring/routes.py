@@ -15,111 +15,7 @@ EMIT_LEGACY_MONITORING_FRAME = os.environ.get('EMIT_LEGACY_MONITORING_FRAME', '0
 SOCKET_STREAM_TARGET_FPS = max(1, int(os.environ.get('SOCKET_STREAM_TARGET_FPS', '20')))
 SOCKET_EMIT_EVERY_N = max(1, int(os.environ.get('SOCKET_EMIT_EVERY_N', '1')))
 
-MONITOR_QUALITY_PRESETS = {
-    'onnx_directml': {
-        'MONITOR_FRAME_WIDTH': '1280',
-        'MONITOR_FRAME_HEIGHT': '720',
-        'YOLO_IMAGE_SIZE': '512',
-        'YOLO_PROCESS_EVERY': '4',
-        'MEDIAPIPE_PROCESS_EVERY': '30',
-        'MEDIAPIPE_REFINE_LANDMARKS': '0',
-        'ENABLE_CLAHE': '0',
-        'ENABLE_CENTER_CROP_PASS': '1',
-        'CENTER_CROP_RATIO': '0.60',
-        'CENTER_CROP_CONF_SCALE': '0.85',
-        'CENTER_CROP_EVERY_N': '2',
-        'STREAM_WIDTH': '960',
-        'STREAM_HEIGHT': '540',
-        'STREAM_JPEG_QUALITY': '88',
-        'FORCE_PROCESS_RESIZE': '1',
-        'PHONE_SEARCH_CONF': '0.08',
-        'PHONE_MIN_CONF': '0.16',
-        'PHONE_NO_TRACK_MIN_CONF': '0.14',
-        'PHONE_CLASS_MIN_CONF': '0.14',
-        'PHONE_MIN_AREA_FRACTION': '0.00012',
-        'MIN_BOX_FRAME_FRACTION': '0.00004',
-        'MAX_BOX_FRAME_FRACTION': '0.30',
-        'GENERAL_DISPLAY_CONF': '0.18',
-        'WATCH_CLASS_MIN_CONF': '0.16',
-        'PAPER_CLASS_MIN_CONF': '0.16',
-        'PERSON_CLASS_MIN_CONF': '0.16',
-        'HEAD_CLASS_MIN_CONF': '0.12',
-        'OVERLAY_DUPLICATE_IOU': '0.45',
-        'OVERLAY_DUPLICATE_MIN_OVERLAP': '0.72',
-        'HEAD_TURN_MIN_DELTA_X': '0.10',
-        'HEAD_TURN_MIN_CONSEC_FRAMES': '3',
-        'HEAD_TURN_RESET_DELTA_X': '0.04',
-        'HAND_GESTURE_CLASS_MIN_CONF': '0.10',
-        'PHONE_PERSISTENCE': '1',
-        'PHONE_NO_TRACK_PERSISTENCE': '1',
-        'STREAM_TARGET_FPS': '15',
-        'SOCKET_STREAM_TARGET_FPS': '15',
-        'MONITOR_CAMERA_FPS': '20',
-        'CAMERA_READ_LATEST': '1',
-        'CAMERA_BUFFER_FLUSH': '1',
-        'SKIP_CAMERA_PROBE': '1',
-        'CAMERA_WARMUP_FRAMES': '2',
-        'CAMERA_WARMUP_DELAY_SEC': '0.02',
-        'POST_CAMERA_INIT_DELAY_SEC': '0.2',
-        'ENABLE_TILED_INFERENCE': '0',
-        'FORCE_PREDICT_ONLY': '1',
-        'USE_ONNX_RUNTIME_DML': '1',
-        'YOLO_DEVICE': 'dml',
-    },
-    'low_latency': {
-        'MONITOR_FRAME_WIDTH': '640',
-        'MONITOR_FRAME_HEIGHT': '360',
-        'FORCE_PROCESS_RESIZE': '1',
-        'YOLO_IMAGE_SIZE': '384',
-        'YOLO_PROCESS_EVERY': '6',
-        'YOLO_MAX_DETECTIONS': '40',
-        'MEDIAPIPE_PROCESS_EVERY': '8',
-        'MEDIAPIPE_REFINE_LANDMARKS': '0',
-        'ENABLE_CLAHE': '0',
-        'STREAM_WIDTH': '640',
-        'STREAM_HEIGHT': '360',
-        'STREAM_JPEG_QUALITY': '68',
-        'STREAM_JPEG_OPTIMIZE': '1',
-        'STREAM_JPEG_PROGRESSIVE': '0',
-        'STREAM_TARGET_FPS': '18',
-        'SOCKET_STREAM_TARGET_FPS': '16',
-        'MONITOR_CAMERA_FPS': '24',
-        'CAMERA_READ_LATEST': '1',
-        'CAMERA_BUFFER_FLUSH': '0',
-        'SKIP_CAMERA_PROBE': '1',
-        'FORCE_PREDICT_ONLY': '1',
-        'MAIN_LOOP_SLEEP_SEC': '0',
-        'GENERAL_DISPLAY_CONF': '0.12',
-        'MODEL_INFER_CONF': '0.08',
-        'OBJECT_DRAW_MIN_CONF': '0.10',
-        'PHONE_MIN_CONF': '0.35',
-        'PHONE_CLASS_MIN_CONF': '0.40',
-        'PHONE_DRAW_MIN_CONF': '0.42',
-        'PHONE_MIN_LONG_SHORT_RATIO': '1.05',
-        'PAPER_CLASS_MIN_CONF': '0.20',
-        'HEAD_CLASS_MIN_CONF': '0.10',
-        'OVERLAY_DUPLICATE_IOU': '0.45',
-        'OVERLAY_DUPLICATE_MIN_OVERLAP': '0.72',
-        'YOLO_WORLD_CLASSES': 'head, face, human face, hand, raised hand, finger, fingers, cell phone, wrist watch, exam paper, answer sheet, question paper',
-        'ALERT_CONFIRM_FRAMES': '1',
-        'HEAD_MIN_AREA_FRACTION': '0.0008',
-        'HEAD_TURN_MIN_DELTA_X': '0.08',
-        'HEAD_TURN_MIN_CONSEC_FRAMES': '3',
-        'HEAD_TURN_RESET_DELTA_X': '0.04',
-        'HEAD_TURN_COOLDOWN_SEC': '2.0',
-        'HEAD_TRACK_SMOOTHING': '0.60',
-        'HAND_CLASS_MIN_CONF': '0.10',
-        'HAND_SIGNAL_MOVEMENT_DELTA': '0.015',
-        'HAND_SIGNAL_MIN_EVENTS': '2',
-        'HAND_SIGNAL_MIN_STREAK': '5',
-        'HAND_SIGNAL_WINDOW_SEC': '6.0',
-        'HAND_SIGNAL_COOLDOWN_SEC': '12.0',
-        'HAND_SIGNAL_UPPER_Y_MAX': '0.82',
-        'PAPER_PHONE_IOU_SUPPRESSION': '0.35',
-        'PAPER_PHONE_CONF_RATIO': '0.80',
-        'ENABLE_TILED_INFERENCE': '0',
-    },
-}
+
 
 # Global state
 current_process = None
@@ -814,7 +710,6 @@ def start_monitoring():
 
         data = request.get_json(silent=True) or {}
         session_id = data.get('session_id')
-        quality_preset = str(data.get('quality_preset') or 'low_latency').strip().lower()
         camera_source = data.get('camera_source')
         if camera_source is not None:
             camera_source = str(camera_source).strip()
@@ -850,22 +745,6 @@ def start_monitoring():
 
         if not session_id:
             return jsonify({'error': 'session_id is required'}), 400
-        if quality_preset not in MONITOR_QUALITY_PRESETS:
-            return jsonify({
-                'error': 'Invalid quality_preset. Use onnx_directml or low_latency.'
-            }), 400
-
-        # Apply socket emission throttle from selected preset in the parent process.
-        # (Preset env vars are also passed to monitor.py child process.)
-        selected_preset = MONITOR_QUALITY_PRESETS.get(quality_preset, {})
-        try:
-            SOCKET_STREAM_TARGET_FPS = max(1, int(selected_preset.get('SOCKET_STREAM_TARGET_FPS', SOCKET_STREAM_TARGET_FPS)))
-        except (TypeError, ValueError):
-            pass
-        try:
-            SOCKET_EMIT_EVERY_N = max(1, int(selected_preset.get('SOCKET_EMIT_EVERY_N', SOCKET_EMIT_EVERY_N)))
-        except (TypeError, ValueError):
-            pass
 
         session = session_model.find_by_id(session_id)
         if not session:
@@ -913,10 +792,8 @@ def start_monitoring():
             cwd=os.path.dirname(monitor_script),
             env={
                 **os.environ,
-                **MONITOR_QUALITY_PRESETS.get(quality_preset, {}),
                 'PYTHONUNBUFFERED': '1',
                 'EXAM_SESSION_FOLDER': session_folder,
-                'MONITOR_QUALITY_PRESET': quality_preset,
                 'MONITOR_CAMERA_SOURCE': effective_camera_source,
                 'MONITOR_CAMERA_BACKEND': effective_camera_backend,
                 'MONITOR_CAMERA_MODE': camera_mode,
@@ -940,7 +817,6 @@ def start_monitoring():
             'message': 'Monitoring started',
             'pid': current_process.pid,
             'session_id': session_id,
-            'quality_preset': quality_preset,
             'camera_source': effective_camera_source,
             'camera_mode': camera_mode,
         }), 200

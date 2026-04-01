@@ -150,6 +150,18 @@ CAMERA_READ_LATEST = _env_bool_profiled("CAMERA_READ_LATEST", True)
 CAMERA_BUFFER_FLUSH = _env_int_profiled("CAMERA_BUFFER_FLUSH", 0)
 MONITOR_CAMERA_FPS = _env_float_profiled("MONITOR_CAMERA_FPS", 20.0)
 
+# RTSP-specific tuning
+# Transport protocol: "tcp" is strongly recommended for Hikvision (avoids UDP packet loss)
+RTSP_TRANSPORT = os.environ.get("MONITOR_RTSP_TRANSPORT", "tcp").strip().lower()
+# Max time (seconds) allowed to open the RTSP stream before giving up
+RTSP_OPEN_TIMEOUT_MS = _env_int("RTSP_OPEN_TIMEOUT_MS", 10_000)   # 10 s
+# Max time (seconds) to wait for the next frame before declaring stream dead
+RTSP_READ_TIMEOUT_MS = _env_int("RTSP_READ_TIMEOUT_MS", 8_000)    # 8 s
+# How long to wait before retrying a failed RTSP connection
+RTSP_RECONNECT_DELAY_SEC = _env_float("RTSP_RECONNECT_DELAY_SEC", 3.0)
+# Maximum consecutive reconnect attempts (0 = unlimited)
+RTSP_MAX_RECONNECTS = _env_int("RTSP_MAX_RECONNECTS", 0)
+
 # Processing configuration
 PROCESS_WIDTH = max(64, _env_int_profiled("MONITOR_FRAME_WIDTH", 1280))
 PROCESS_HEIGHT = max(64, _env_int_profiled("MONITOR_FRAME_HEIGHT", 720))
@@ -980,58 +992,167 @@ class YOLOWorldDetector:
         return filtered_detections
 
 # ---------------------------------------------------------------------------
-# Camera management (from original monitor.py)
+# Camera management — RTSPCapture (threaded, always-fresh-frame, auto-reconnect)
 # ---------------------------------------------------------------------------
 
-def open_capture() -> Optional[cv2.VideoCapture]:
-    backend_map = {
-        "ffmpeg": cv2.CAP_FFMPEG,
-        "gstreamer": cv2.CAP_GSTREAMER,
-        "dshow": getattr(cv2, "CAP_DSHOW", cv2.CAP_ANY),
-        "msmf": getattr(cv2, "CAP_MSMF", cv2.CAP_ANY),
-        "auto": cv2.CAP_ANY,
-    }
+def _build_rtsp_cap(source) -> Optional[cv2.VideoCapture]:
+    """
+    Open an RTSP stream with low-latency FFmpeg options injected via the
+    environment variable trick supported by OpenCV's FFMPEG backend.
 
-    # Laptop mode should strongly prefer local webcam backends before falling back.
-    if CAMERA_MODE == "laptop" and CAMERA_BACKEND == "auto":
-        backend_candidates: List[Tuple[str, int]] = [
-            ("msmf", backend_map["msmf"]),
-            ("dshow", backend_map["dshow"]),
-            ("auto", backend_map["auto"]),
-        ]
+    Key settings applied:
+      • CAP_PROP_BUFFERSIZE = 1       → keep only 1 frame in the OS decode buffer
+      • rtsp_transport=tcp            → reliable byte-stream (avoids UDP drops)
+      • fflags=nobuffer               → disable FFmpeg's own read buffer
+      • flags=low_delay               → request low-latency decoding path
+      • analyzeduration / probesize   → drastically cut stream-open latency
+      • stimeout                      → socket timeout so a dead stream doesn't
+                                         hang forever
+    """
+    is_rtsp = isinstance(source, str) and source.lower().startswith("rtsp")
+
+    if is_rtsp:
+        # Inject FFmpeg options via the OpenCV environment variable.
+        # Syntax inside OpenCV for this var is strict: "key;value|key;value"
+        ffmpeg_opts = "|".join([
+            f"rtsp_transport;{RTSP_TRANSPORT}",
+            "fflags;nobuffer",
+            "analyzeduration;1000000",   # 1s (ensures high-res SPS/PPS are found)
+            "probesize;5000000",         # 5 MB
+            f"stimeout;{RTSP_READ_TIMEOUT_MS * 1000}",  # microseconds
+        ])
+        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = ffmpeg_opts
+        cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
+        # Remove env var so it doesn't bleed into other captures
+        os.environ.pop("OPENCV_FFMPEG_CAPTURE_OPTIONS", None)
     else:
+        # Local webcam — use the fastest available backend
+        backend_map = {
+            "ffmpeg": cv2.CAP_FFMPEG,
+            "gstreamer": cv2.CAP_GSTREAMER,
+            "dshow": getattr(cv2, "CAP_DSHOW", cv2.CAP_ANY),
+            "msmf": getattr(cv2, "CAP_MSMF", cv2.CAP_ANY),
+            "auto": cv2.CAP_ANY,
+        }
         backend_name = CAMERA_BACKEND.lower()
-        backend_idx = backend_map.get(backend_name, cv2.CAP_ANY)
-        backend_candidates = [(backend_name, backend_idx)]
+        backend_idx  = backend_map.get(backend_name, cv2.CAP_ANY)
+        cap = cv2.VideoCapture(source, backend_idx)
 
-    for backend_name, backend_idx in backend_candidates:
-        try:
-            cap = cv2.VideoCapture(CAMERA_SOURCE, backend_idx)
-            if not cap.isOpened():
-                continue
-            
-            # Apply camera settings
-            cap.set(cv2.CAP_PROP_FPS, MONITOR_CAMERA_FPS)
-            cap.set(cv2.CAP_PROP_BUFFERSIZE, CAMERA_BUFFER_FLUSH)
-            
-            # Warm up camera
-            for _ in range(CAMERA_WARMUP_FRAMES):
-                ret, _ = cap.read()
-                if not ret:
-                    break
-                time.sleep(CAMERA_WARMUP_DELAY_SEC)
-            
-            if ret:
-                log(f"Camera opened successfully with backend '{backend_name}'")
-                return cap
-            else:
+    if not cap.isOpened():
+        return None
+
+    # For RTSP keep the internal decode buffer at 1 frame so cap.read() always
+    # returns the newest frame, not a stale buffered one.
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    cap.set(cv2.CAP_PROP_FPS, MONITOR_CAMERA_FPS)
+    return cap
+
+
+class RTSPCapture:
+    """
+    Background-threaded camera reader that eliminates RTSP lag.
+
+    Problem with naive cap.read():
+        OpenCV buffers several decoded frames internally.  When your processing
+        loop is slower than the camera FPS those frames queue up, so cap.read()
+        gives you a frame that is several seconds old — causing the appearance of
+        a frozen or very laggy stream.
+
+    Solution:
+        A dedicated daemon thread calls cap.read() in a tight loop and stores
+        only the *latest* frame in a deque(maxlen=1).  The main thread pops
+        that single slot; old frames are automatically discarded.
+
+    Reconnection:
+        If the thread detects that cap.read() has failed (network hiccup,
+        camera reboot, etc.) it waits RTSP_RECONNECT_DELAY_SEC and tries to
+        re-open the stream automatically.
+    """
+
+    def __init__(self, source):
+        self.source = source
+        self._buf: deque = deque(maxlen=1)   # always holds the freshest frame
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._connected = threading.Event()
+        self._reconnect_count = 0
+        self._thread = threading.Thread(target=self._reader, daemon=True, name="RTSPReader")
+        self._thread.start()
+        # Wait up to RTSP_OPEN_TIMEOUT_MS ms for the first successful frame
+        timeout = RTSP_OPEN_TIMEOUT_MS / 1000.0
+        if not self._connected.wait(timeout=timeout):
+            log("WARNING: RTSP stream did not produce a frame within the open timeout — "
+                "proceeding anyway; frames will arrive when the stream becomes ready.")
+
+    # ------------------------------------------------------------------
+    # Internal reader thread
+    # ------------------------------------------------------------------
+
+    def _reader(self):
+        cap: Optional[cv2.VideoCapture] = None
+
+        while not self._stop.is_set():
+            # ── Open / re-open ────────────────────────────────────────
+            if cap is None or not cap.isOpened():
+                if cap is not None:
+                    cap.release()
+                    cap = None
+                log(f"RTSPCapture: connecting to {self.source} "
+                    f"(attempt {self._reconnect_count + 1})")
+                cap = _build_rtsp_cap(self.source)
+                if cap is None or not cap.isOpened():
+                    self._reconnect_count += 1
+                    log(f"RTSPCapture: connection failed, retrying in "
+                        f"{RTSP_RECONNECT_DELAY_SEC}s...")
+                    self._stop.wait(timeout=RTSP_RECONNECT_DELAY_SEC)
+                    continue
+                log("RTSPCapture: stream connected successfully.")
+                self._reconnect_count = 0
+
+            # ── Continuous read ───────────────────────────────────────
+            ret, frame = cap.read()
+            if not ret or frame is None:
+                log("RTSPCapture: read() failed — stream may have dropped. Reconnecting...")
                 cap.release()
-        except Exception as exc:
-            log(f"Failed to open camera with backend '{backend_name}': {exc}")
-            continue
-    
-    log("Failed to open camera with any backend")
-    return None
+                cap = None
+                self._stop.wait(timeout=RTSP_RECONNECT_DELAY_SEC)
+                continue
+
+            # Store ONLY the freshest frame; discard any queued old frame
+            self._buf.append(frame)
+            self._connected.set()   # Signal that we have at least one good frame
+
+        if cap is not None:
+            cap.release()
+        log("RTSPCapture reader thread exited.")
+
+    # ------------------------------------------------------------------
+    # Public API  (drop-in replacement for cap.read())
+    # ------------------------------------------------------------------
+
+    def read(self) -> Tuple[bool, Optional[np.ndarray]]:
+        """Return (True, frame) if a fresh frame is available, else (False, None)."""
+        try:
+            return True, self._buf.pop()
+        except IndexError:
+            return False, None
+
+    def is_connected(self) -> bool:
+        return self._connected.is_set()
+
+    def release(self):
+        self._stop.set()
+        self._thread.join(timeout=5.0)
+
+
+def open_capture() -> Optional[RTSPCapture]:
+    """
+    Return an RTSPCapture for RTSP sources, or a thin RTSPCapture wrapper
+    around a local webcam.  Returns None only if the source string is invalid.
+    """
+    log(f"Opening camera source: {CAMERA_SOURCE}")
+    capture = RTSPCapture(CAMERA_SOURCE)
+    return capture
 
 # ---------------------------------------------------------------------------
 # Main monitoring loop
@@ -1065,21 +1186,27 @@ def main():
     if cap is None:
         log("Failed to open camera")
         return
-    
-    # Post camera initialization delay
+
+    # For RTSP sources wait briefly so the reader thread can fill the buffer;
+    # this avoids a burst of "no frame yet" log spam at startup.
+    log("Waiting for first camera frame...")
     time.sleep(POST_CAMERA_INIT_DELAY_SEC)
-    
+
     # Main loop variables
     frame_idx = 0
-    last_detections = []
-    last_handface_violations = []
-    last_handface_overlay_data = []
-    
+    last_detections: List[Dict] = []
+    last_handface_violations: List[Dict] = []
+    last_handface_overlay_data: List[Dict] = []
+
+    # Carry the last good frame so we can keep drawing / emitting even when
+    # the RTSP reader thread is mid-reconnect and briefly has no new frames.
+    last_good_frame: Optional[np.ndarray] = None
+
     # YOLO async threading variables
     yolo_lock = threading.Lock()
-    yolo_payload = None
+    yolo_payload: Optional[np.ndarray] = None
     yolo_running = True
-    
+
     def yolo_worker():
         nonlocal last_detections, yolo_payload, yolo_running
         while yolo_running:
@@ -1099,16 +1226,32 @@ def main():
 
     yolo_thread = threading.Thread(target=yolo_worker, daemon=True)
     yolo_thread.start()
-    frame_throttle_state = {}
+    frame_throttle_state: Dict[str, float] = {}
     fps = 0.0
     prev_time = time.time()
-    
+    # Track consecutive empty reads to avoid tight-spinning when stream drops
+    _empty_streak = 0
+    _MAX_EMPTY_STREAK_SLEEP = 0.03  # sleep 30 ms after N consecutive misses
+    _EMPTY_STREAK_THRESH = 5
+
     try:
         while not stop_event.is_set():
             ret, frame = cap.read()
-            if not ret:
-                log("Failed to read frame from camera")
-                break
+
+            # ── No fresh frame yet (reader thread reconnecting or behind) ──
+            if not ret or frame is None:
+                _empty_streak += 1
+                if _empty_streak >= _EMPTY_STREAK_THRESH:
+                    # Avoid busy-spinning while waiting for reconnect
+                    time.sleep(_MAX_EMPTY_STREAK_SLEEP)
+                if last_good_frame is not None:
+                    # Keep emitting the last good frame so the frontend
+                    # doesn't go blank during brief network hiccups.
+                    emit_frame(last_good_frame, frame_throttle_state)
+                continue
+
+            _empty_streak = 0
+            last_good_frame = frame
             
             # Resize for processing if needed
             if FORCE_PROCESS_RESIZE:

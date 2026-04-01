@@ -4,11 +4,10 @@ const monitoringService = {
   /**
    * Start monitoring camera
    */
-  async startMonitoring(sessionId, qualityPreset = 'low_latency', cameraSource = null, cameraMode = 'laptop') {
+  async startMonitoring(sessionId, cameraSource = null, cameraMode = 'laptop') {
     try {
       const payload = {
         session_id: sessionId,
-        quality_preset: qualityPreset,
       };
 
       if (cameraSource && String(cameraSource).trim()) {
