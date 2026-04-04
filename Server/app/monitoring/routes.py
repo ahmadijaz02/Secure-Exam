@@ -30,10 +30,6 @@ HEAD_TURN_WINDOW_SECONDS = 60
 HEAD_TURN_ESCALATION_THRESHOLD = 3
 student_head_turn_tracker = {}   # { student_key: [timestamp, ...] }
 
-HAND_SIGNAL_WINDOW_SECONDS = 60
-HAND_SIGNAL_ESCALATION_THRESHOLD = 3
-student_hand_signal_tracker = {}  # { student_key: [timestamp, ...] }
-
 # Keep email dispatch non-blocking and rate-limited so stdout reader does not stall.
 EMAIL_ALERT_COOLDOWN_SECONDS = 20
 last_email_sent_at = {}
@@ -46,7 +42,7 @@ _SEAT_CACHE_TTL = 60.0  # seconds before re-fetching from DB
 
 # ---------------------------------------------------------------------------
 # Last confirmed student per session — used to attribute behaviour alerts
-# (HEAD_DOWN, HAND_SIGNAL …) that carry no real bounding box.
+# (HEAD_DOWN, etc.) that carry no real bounding box.
 # A confirmation is only set when a hard YOLO object detection (phone, watch,
 # paper) successfully resolves to a specific seat with high confidence.
 # It expires after 30 s to avoid stale attribution.
@@ -283,7 +279,7 @@ def resolve_student_from_detection(app, exam_session_id, norm_x, norm_y,
         app: Flask application object.
         exam_session_id: Current exam session ID.
         norm_x / norm_y: Detection centre, normalised 0-1.
-        is_behaviour_alert: True for HEAD_* / HAND_SIGNAL / HEAD_DOWN alerts.
+        is_behaviour_alert: True for HEAD_* / HEAD_DOWN alerts.
 
     Returns:
         dict with student_name, roll_number, seat_number … or None.
@@ -513,13 +509,12 @@ def process_monitor_output(process, socketio_instance, app):
 
                     # Resolve student from seating plan (if coordinates available)
                     exam_session_id = getattr(app, 'current_exam_session_id', None)
-                    # Behaviour alerts (head turns, hand signals, head down) use a
+                    # Behaviour alerts (head turns, head down) use a
                     # synthetic frame-centre bbox that is unreliable for seat matching.
                     # Pass the flag so resolve_student uses the cached last-confirmed
                     # YOLO match instead of guessing from coordinates.
                     _BEHAVIOUR_ALERT_REASONS = {
-                        'HEAD_LEFT', 'HEAD_RIGHT', 'HEAD_DOWN',
-                        'HAND_SIGNAL', 'HAND_MOUTH', 'SIGN_LANGUAGE_CHEATING'
+                        'HEAD_LEFT', 'HEAD_RIGHT', 'HEAD_DOWN'
                     }
                     _is_behaviour = reason in _BEHAVIOUR_ALERT_REASONS
                     student_info = resolve_student_from_detection(
@@ -536,7 +531,6 @@ def process_monitor_output(process, socketio_instance, app):
                     # Determine warning level and type
                     object_types = ['PHONE_DETECTED', 'WATCH_DETECTED', 'PAPER_PASSING']
                     head_turn_types = ['HEAD_LEFT', 'HEAD_RIGHT']
-                    hand_signal_types = ['HAND_SIGNAL']
                     behaviour_escalated = False
                     escalation_count = 0
                     escalation_window = 0
@@ -576,35 +570,6 @@ def process_monitor_output(process, socketio_instance, app):
                                 f"[Monitor] Head-turn ESCALATED to Level 2 for "
                                 f"{student_name} ({roll_number}) — "
                                 f"{head_turn_count} turns in last {HEAD_TURN_WINDOW_SECONDS}s"
-                            )
-
-                    # --- Hand-signal escalation logic ---
-                    if reason in hand_signal_types and student_info:
-                        student_key = roll_number or seat_number or student_name
-                        now_ts = time.time()
-
-                        if student_key not in student_hand_signal_tracker:
-                            student_hand_signal_tracker[student_key] = []
-                        student_hand_signal_tracker[student_key].append(now_ts)
-
-                        cutoff = now_ts - HAND_SIGNAL_WINDOW_SECONDS
-                        student_hand_signal_tracker[student_key] = [
-                            t for t in student_hand_signal_tracker[student_key] if t >= cutoff
-                        ]
-
-                        hand_signal_count = len(student_hand_signal_tracker[student_key])
-
-                        if hand_signal_count >= HAND_SIGNAL_ESCALATION_THRESHOLD:
-                            warning_level = 2
-                            send_email = True
-                            behaviour_escalated = True
-                            escalation_count = hand_signal_count
-                            escalation_window = HAND_SIGNAL_WINDOW_SECONDS
-                            escalation_label = 'hand signals'
-                            print(
-                                f"[Monitor] Hand-signal ESCALATED to Level 2 for "
-                                f"{student_name} ({roll_number}) — "
-                                f"{hand_signal_count} signals in last {HAND_SIGNAL_WINDOW_SECONDS}s"
                             )
 
                     # Build description with student info
@@ -862,7 +827,6 @@ def stop_monitoring():
         monitoring_active = False
         # Reset per-student behaviour escalation trackers
         student_head_turn_tracker.clear()
-        student_hand_signal_tracker.clear()
         if current_process:
             current_process.terminate()
             try:

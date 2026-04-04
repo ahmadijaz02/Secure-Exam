@@ -27,18 +27,13 @@ function LoginPage() {
       [name]: value
     }));
     
-    // Clear error when user starts typing
     if (errors[name]) {
-      setErrors(prev => ({
-        ...prev,
-        [name]: ''
-      }));
+      setErrors(prev => ({ ...prev, [name]: '' }));
     }
   };
 
   const validateForm = () => {
     const newErrors = {};
-
     if (!formData.email) {
       newErrors.email = 'Email is required';
     } else if (!/\S+@\S+\.\S+/.test(formData.email)) {
@@ -57,22 +52,15 @@ function LoginPage() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    
-    if (!validateForm()) {
-      return;
-    }
+    if (!validateForm()) return;
 
     setIsLoading(true);
-
     try {
       const response = await login(formData);
       showSuccess('Login successful!');
-      
-      // Redirect based on user role
       const redirectPath = from || (response?.user?.role === 'admin' ? '/admin/dashboard' : '/teacher/dashboard');
       navigate(redirectPath, { replace: true });
     } catch (error) {
-      console.error('Login error:', error);
       showError(error.message || 'Login failed. Please try again.');
     } finally {
       setIsLoading(false);
@@ -81,22 +69,22 @@ function LoginPage() {
 
   return (
     <div className="space-y-6">
-      <div className="text-center">
-        <h2 className="text-2xl font-bold text-gray-900">
-          Sign in to your account
+      <div className="text-center relative">
+        <h2 className="text-2xl font-bold text-gray-900 dark:text-white tracking-tight">
+          Welcome back
         </h2>
-        <p className="mt-2 text-sm text-gray-600">
-          Or{' '}
+        <p className="mt-1.5 text-sm font-medium text-gray-600 dark:text-gray-400">
+          Don't have an account?{' '}
           <Link
             to="/auth/signup"
-            className="font-medium text-blue-600 hover:text-blue-500"
+            className="text-indigo-600 dark:text-indigo-400 hover:text-indigo-500 dark:hover:text-indigo-300 transition-colors"
           >
-            create a new account
+            Sign up
           </Link>
         </p>
       </div>
 
-      <form className="space-y-4" onSubmit={handleSubmit}>
+      <form className="space-y-5" onSubmit={handleSubmit}>
         <Input
           label="Email address"
           type="email"
@@ -125,29 +113,29 @@ function LoginPage() {
               id="remember-me"
               name="remember-me"
               type="checkbox"
-              className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+              className="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500/30 dark:border-gray-600 dark:bg-gray-700 transition-all cursor-pointer"
             />
-            <label htmlFor="remember-me" className="ml-2 block text-sm text-gray-900">
+            <label htmlFor="remember-me" className="ml-2 block text-sm font-medium text-gray-700 dark:text-gray-300 cursor-pointer select-none">
               Remember me
             </label>
           </div>
 
           <div className="text-sm">
-            <a href="#" className="font-medium text-blue-600 hover:text-blue-500">
-              Forgot your password?
+            <a href="#" className="font-semibold text-indigo-600 dark:text-indigo-400 hover:text-indigo-500 dark:hover:text-indigo-300 transition-colors">
+              Forgot password?
             </a>
           </div>
         </div>
 
         <Button
           type="submit"
-          variant="primary"
+          variant="gradient-primary"
           size="lg"
           loading={isLoading}
           disabled={isLoading}
-          className="w-full"
+          className="w-full justify-center text-[15px]"
         >
-          Sign in
+          Sign in to account
         </Button>
       </form>
     </div>

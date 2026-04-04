@@ -11,7 +11,7 @@ function SignupPage() {
     email: '',
     password: '',
     confirmPassword: '',
-    role: 'teacher', // Default role for public signup
+    role: 'teacher',
   });
   const [errors, setErrors] = useState({});
   const [isLoading, setIsLoading] = useState(false);
@@ -22,50 +22,25 @@ function SignupPage() {
 
   const handleChange = (e) => {
     const { name, value } = e.target;
-    setFormData(prev => ({
-      ...prev,
-      [name]: value
-    }));
-    
-    // Clear error when user starts typing
-    if (errors[name]) {
-      setErrors(prev => ({
-        ...prev,
-        [name]: ''
-      }));
-    }
+    setFormData(prev => ({ ...prev, [name]: value }));
+    if (errors[name]) setErrors(prev => ({ ...prev, [name]: '' }));
   };
 
   const validateForm = () => {
     const newErrors = {};
+    if (!formData.name) newErrors.name = 'Name is required';
+    else if (formData.name.length < 2) newErrors.name = 'Name must be at least 2 characters';
 
-    if (!formData.name) {
-      newErrors.name = 'Name is required';
-    } else if (formData.name.length < 2) {
-      newErrors.name = 'Name must be at least 2 characters';
-    }
+    if (!formData.email) newErrors.email = 'Email is required';
+    else if (!/\S+@\S+\.\S+/.test(formData.email)) newErrors.email = 'Email is invalid';
 
-    if (!formData.email) {
-      newErrors.email = 'Email is required';
-    } else if (!/\S+@\S+\.\S+/.test(formData.email)) {
-      newErrors.email = 'Email is invalid';
-    }
+    if (!formData.password) newErrors.password = 'Password is required';
+    else if (formData.password.length < 6) newErrors.password = 'Password must be at least 6 characters';
 
-    if (!formData.password) {
-      newErrors.password = 'Password is required';
-    } else if (formData.password.length < 6) {
-      newErrors.password = 'Password must be at least 6 characters';
-    }
+    if (!formData.confirmPassword) newErrors.confirmPassword = 'Confirm your password';
+    else if (formData.password !== formData.confirmPassword) newErrors.confirmPassword = 'Passwords do not match';
 
-    if (!formData.confirmPassword) {
-      newErrors.confirmPassword = 'Please confirm your password';
-    } else if (formData.password !== formData.confirmPassword) {
-      newErrors.confirmPassword = 'Passwords do not match';
-    }
-
-    if (!formData.role) {
-      newErrors.role = 'Role is required';
-    }
+    if (!formData.role) newErrors.role = 'Role is required';
 
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -73,20 +48,15 @@ function SignupPage() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    
-    if (!validateForm()) {
-      return;
-    }
+    if (!validateForm()) return;
 
     setIsLoading(true);
-
     try {
       const { confirmPassword, ...signupData } = formData;
       await signup(signupData);
       showSuccess('Account created successfully!');
       navigate('/app');
     } catch (error) {
-      console.error('Signup error:', error);
       showError(error.message || 'Signup failed. Please try again.');
     } finally {
       setIsLoading(false);
@@ -95,28 +65,23 @@ function SignupPage() {
 
   return (
     <div className="space-y-6">
-      <div className="text-center">
-        <h2 className="text-2xl font-bold text-gray-900">
-          Create your account
+      <div className="text-center relative">
+        <h2 className="text-2xl font-bold text-gray-900 dark:text-white tracking-tight">
+          Create an account
         </h2>
-        <p className="mt-2 text-sm text-gray-600">
-          Or{' '}
+        <p className="mt-1.5 text-sm font-medium text-gray-600 dark:text-gray-400">
+          Already have an account?{' '}
           <Link
             to="/auth/login"
-            className="font-medium text-blue-600 hover:text-blue-500"
+            className="text-indigo-600 dark:text-indigo-400 hover:text-indigo-500 dark:hover:text-indigo-300 transition-colors"
           >
-            sign in to your existing account
+            Sign in
           </Link>
         </p>
       </div>
 
       <form className="space-y-4" onSubmit={handleSubmit}>
-        {/* Hidden role field - always set to 'teacher' for public signup */}
-        <input
-          type="hidden"
-          name="role"
-          value="teacher"
-        />
+        <input type="hidden" name="role" value="teacher" />
         <Input
           label="Full name"
           type="text"
@@ -139,56 +104,60 @@ function SignupPage() {
           placeholder="Enter your email"
         />
 
-        <Input
-          label="Password"
-          type="password"
-          name="password"
-          value={formData.password}
-          onChange={handleChange}
-          error={errors.password}
-          required
-          placeholder="Create a password"
-          helperText="Must be at least 6 characters"
-        />
-
-        <Input
-          label="Confirm password"
-          type="password"
-          name="confirmPassword"
-          value={formData.confirmPassword}
-          onChange={handleChange}
-          error={errors.confirmPassword}
-          required
-          placeholder="Confirm your password"
-        />
-
-        <div className="flex items-center">
-          <input
-            id="agree-terms"
-            name="agree-terms"
-            type="checkbox"
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <Input
+            label="Password"
+            type="password"
+            name="password"
+            value={formData.password}
+            onChange={handleChange}
+            error={errors.password}
             required
-            className="h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+            placeholder="Create password"
           />
-          <label htmlFor="agree-terms" className="ml-2 block text-sm text-gray-900">
-            I agree to the{' '}
-            <a href="#" className="text-blue-600 hover:text-blue-500">
-              Terms of Service
-            </a>{' '}
-            and{' '}
-            <a href="#" className="text-blue-600 hover:text-blue-500">
-              Privacy Policy
-            </a>
-          </label>
+          <Input
+            label="Confirm password"
+            type="password"
+            name="confirmPassword"
+            value={formData.confirmPassword}
+            onChange={handleChange}
+            error={errors.confirmPassword}
+            required
+            placeholder="Confirm password"
+          />
+        </div>
+
+        <div className="flex items-start pt-2 px-1">
+          <div className="flex h-5 items-center">
+            <input
+              id="agree-terms"
+              name="agree-terms"
+              type="checkbox"
+              required
+              className="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500/30 dark:border-gray-600 dark:bg-gray-700 transition-all cursor-pointer"
+            />
+          </div>
+          <div className="ml-3 text-sm">
+            <label htmlFor="agree-terms" className="font-medium text-gray-700 dark:text-gray-300 cursor-pointer select-none">
+              I agree to the{' '}
+              <a href="#" className="text-indigo-600 dark:text-indigo-400 hover:text-indigo-500 hover:underline">
+                Terms of Service
+              </a>{' '}
+              and{' '}
+              <a href="#" className="text-indigo-600 dark:text-indigo-400 hover:text-indigo-500 hover:underline">
+                Privacy Policy
+              </a>
+            </label>
+          </div>
         </div>
 
         <Button
           type="submit"
-          variant="primary"
+          variant="gradient-primary"
           size="lg"
           loading={isLoading}
           disabled={isLoading}
-          className="w-full"
+          className="w-full justify-center text-[15px] mt-2"
         >
           Create account
         </Button>

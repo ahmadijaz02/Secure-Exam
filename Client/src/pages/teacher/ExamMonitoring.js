@@ -10,7 +10,6 @@ const objectAlertReasons = ['PHONE_DETECTED', 'WATCH_DETECTED', 'PAPER_PASSING']
 const ALERT_ICONS = {
   PHONE_DETECTED: '📱', WATCH_DETECTED: '⌚', PAPER_PASSING: '📄',
   HEAD_LEFT: '↩️', HEAD_RIGHT: '↪️', HEAD_DOWN: '⬇️',
-  HAND_SIGNAL: '✋', HAND_MOUTH: '🤫', SIGN_LANGUAGE_CHEATING: '🤟',
 };
 
 const ExamMonitoring = () => {
@@ -149,9 +148,8 @@ const ExamMonitoring = () => {
 
   const formatAlertReason = (reason) => ({
     PHONE_DETECTED: 'Phone Detected', WATCH_DETECTED: 'Watch Detected',
-    HAND_MOUTH: 'Hand Near Mouth', SIGN_LANGUAGE_CHEATING: 'Sign Language',
     HEAD_LEFT: 'Head Turn Left', HEAD_RIGHT: 'Head Turn Right',
-    HEAD_DOWN: 'Head Down', HAND_SIGNAL: 'Hand Signal', PAPER_PASSING: 'Paper Passing',
+    HEAD_DOWN: 'Head Down', PAPER_PASSING: 'Paper Passing',
   }[reason] || reason);
 
   const filteredAlerts = useMemo(() => {

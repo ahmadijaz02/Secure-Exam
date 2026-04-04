@@ -30,7 +30,6 @@ def _build_html_email(subject, reason, timestamp, student_name=None,
         'PAPER_PASSING': 'Unauthorized Material (Paper)',
         'HEAD_LEFT': 'Repeated Head Turn (Left)',
         'HEAD_RIGHT': 'Repeated Head Turn (Right)',
-        'HAND_SIGNAL': 'Suspicious Hand Signalling',
         'HEAD_DOWN': 'Suspicious Posture (Head Down)'
     }
     friendly_reason = REASON_MAP.get(reason, reason)

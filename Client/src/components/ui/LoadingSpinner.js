@@ -1,6 +1,6 @@
 import React from 'react';
 
-function LoadingSpinner({ size = 'md', className = '', color = 'blue' }) {
+function LoadingSpinner({ size = 'md', className = '', color = 'indigo' }) {
   const sizeClasses = {
     sm: 'w-4 h-4',
     md: 'w-6 h-6',
@@ -10,16 +10,17 @@ function LoadingSpinner({ size = 'md', className = '', color = 'blue' }) {
 
   const colorClasses = {
     blue: 'text-blue-600',
+    indigo: 'text-indigo-600',
     gray: 'text-gray-600',
     white: 'text-white',
-    green: 'text-green-600',
+    green: 'text-emerald-600',
     red: 'text-red-600',
   };
 
   return (
     <div className={`inline-flex items-center justify-center ${className}`}>
       <svg
-        className={`animate-spin ${sizeClasses[size]} ${colorClasses[color]}`}
+        className={`animate-spin ${sizeClasses[size]} ${colorClasses[color] || colorClasses.indigo}`}
         xmlns="http://www.w3.org/2000/svg"
         fill="none"
         viewBox="0 0 24 24"

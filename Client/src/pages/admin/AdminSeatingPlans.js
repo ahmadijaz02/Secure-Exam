@@ -325,19 +325,19 @@ function AdminSeatingPlans() {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-center">
+    <div className="space-y-6 max-w-[1400px] mx-auto">
+      <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-center animate-fade-in-up">
         <div>
-          <h1 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white">Seating Plans</h1>
-          <p className="mt-1 sm:mt-2 text-sm sm:text-base text-gray-600 dark:text-gray-400">Configure classroom seating arrangements</p>
+          <h1 className="text-2xl sm:text-3xl font-extrabold text-gray-900 dark:text-white tracking-tight">Seating Plans</h1>
+          <p className="mt-1 sm:mt-2 text-sm sm:text-base text-gray-500 dark:text-gray-400">Configure classroom seating arrangements</p>
         </div>
       </div>
 
       {/* Two Column Layout: Create (Left) + Existing (Right) */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
         
         {/* LEFT COLUMN: Create Seating Plan Form */}
-        <Card>
+        <Card glass hover={false} animate>
           <Card.Header>
             <div className="flex justify-between items-center">
               <Card.Title>
@@ -369,20 +369,23 @@ function AdminSeatingPlans() {
           </Card.Header>
           <Card.Content className="space-y-4">
             {!useImageMode && !editingPlan && (
-              <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-3 mb-4">
+              <div className="bg-indigo-50/50 dark:bg-indigo-900/20 border border-indigo-200/60 dark:border-indigo-800/40 rounded-xl p-3 mb-4">
                 <div className="flex gap-2">
                   <Button 
                     onClick={() => setUseImageMode(true)}
                     variant="outline"
                     className="flex-1 text-sm"
                   >
-                    📸 Create from Image
+                    <svg className="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
+                    Create from Image
                   </Button>
                   <Button 
                     onClick={() => setShowSeatingEditor(false)}
+                    variant="gradient-primary"
                     className="flex-1 text-sm"
                   >
-                    📋 Manual Entry
+                    <svg className="w-4 h-4 mr-1.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" /></svg>
+                    Manual Entry
                   </Button>
                 </div>
               </div>
@@ -416,11 +419,11 @@ function AdminSeatingPlans() {
                   />
                 </div>
 
-                <div className="rounded-lg border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 p-4">
-                  <p className="text-sm text-blue-900 dark:text-blue-200">
+                <div className="rounded-xl border border-indigo-200/60 dark:border-indigo-800/40 bg-indigo-50/50 dark:bg-indigo-900/20 p-4">
+                  <p className="text-sm font-medium text-indigo-900 dark:text-indigo-200">
                     Next step will open the guided flow:
                   </p>
-                  <ul className="mt-2 text-sm text-blue-800 dark:text-blue-300 list-disc list-inside space-y-1">
+                  <ul className="mt-2 text-sm text-indigo-800 dark:text-indigo-300 list-disc list-inside space-y-1">
                     <li>Upload classroom image</li>
                     <li>Mark seat positions and save</li>
                     <li>Assign students manually or by CSV</li>
@@ -495,8 +498,8 @@ function AdminSeatingPlans() {
                 ) : (
                   <>
                     {editingPlan && (
-                      <div className="bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg p-3">
-                        <p className="text-xs text-blue-900 dark:text-blue-300 mb-2">
+                      <div className="bg-indigo-50/50 dark:bg-indigo-900/20 border border-indigo-200/60 dark:border-indigo-800/40 rounded-xl p-3">
+                        <p className="text-xs text-indigo-900 dark:text-indigo-300 mb-2">
                           <strong>Edit Mode:</strong> Change the number of seats above, then click below to update the layout.
                         </p>
                         <Button 
@@ -513,23 +516,23 @@ function AdminSeatingPlans() {
                 
                 {showSeatingEditor && (
                   <>
-                    <div className="border border-gray-200 dark:border-gray-700 rounded-lg p-4 bg-gray-50 dark:bg-gray-900">
+                    <div className="border border-gray-200/60 dark:border-gray-700/40 rounded-xl p-4 bg-gray-50/50 dark:bg-gray-800/30">
                       <div className="flex justify-between items-center mb-3">
-                        <h3 className="text-sm font-semibold text-gray-900 dark:text-white">Seating Layout</h3>
-                        <span className="text-xs text-gray-600 dark:text-gray-400">
+                        <h3 className="text-sm font-bold text-gray-900 dark:text-white">Seating Layout</h3>
+                        <span className="text-[10px] font-bold text-gray-400 bg-gray-100 dark:bg-gray-700 px-2 py-0.5 rounded-full">
                           {formData.total_seats} seats
                         </span>
                       </div>
-                      <p className="text-xs text-gray-600 dark:text-gray-400 mb-3">
+                      <p className="text-xs text-gray-500 dark:text-gray-400 mb-3">
                         Click a seat to assign student details
                       </p>
                       {renderSeatingEditor(seats, selectedSeatKey, handleSelectSeat)}
                     </div>
 
                     {selectedSeatKey && (
-                      <div className="border-2 border-blue-300 dark:border-blue-700 rounded-lg p-4 bg-blue-50 dark:bg-blue-900/20 space-y-3 shadow-sm">
+                      <div className="border-2 border-indigo-300/60 dark:border-indigo-700/40 rounded-xl p-4 bg-indigo-50/50 dark:bg-indigo-900/20 space-y-3 shadow-sm">
                         <div className="flex items-center gap-2">
-                          <p className="text-sm font-semibold text-blue-900 dark:text-blue-300">
+                          <p className="text-sm font-bold text-indigo-900 dark:text-indigo-300">
                             Seat: {selectedSeatKey}
                           </p>
                         </div>
@@ -610,7 +613,7 @@ function AdminSeatingPlans() {
         </Card>
 
         {/* RIGHT COLUMN: Existing Seating Plans */}
-        <Card>
+        <Card glass hover={false} animate>
           <Card.Header>
             <Card.Title>Seating Plans Library</Card.Title>
           </Card.Header>
@@ -621,26 +624,28 @@ function AdminSeatingPlans() {
               </p>
             ) : (
               seatingPlans.map((plan) => (
-                <div key={plan.id} className="border border-gray-200 dark:border-gray-700 rounded-lg p-3 hover:bg-gray-50 dark:hover:bg-gray-900/30 transition-colors">
+                <div key={plan.id} className="border border-gray-200/60 dark:border-gray-700/40 rounded-xl p-3.5 hover:bg-white/60 dark:hover:bg-gray-800/40 transition-all duration-200 hover:shadow-sm">
                   <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2 sm:gap-3">
                   <div className="flex-1 min-w-0">
                       <p className="font-medium text-gray-900 dark:text-white">{plan.classroom_name}</p>
                       {plan.room_number && (
-                        <p className="text-xs text-purple-600 dark:text-purple-400 mt-0.5 font-semibold">
-                          🏢 {plan.room_number}
+                        <p className="text-xs text-violet-600 dark:text-violet-400 mt-0.5 font-semibold flex items-center gap-1">
+                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4" /></svg>
+                          {plan.room_number}
                         </p>
                       )}
-                      <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
+                      <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
                         {plan.total_seats || (plan.seats ? plan.seats.length : 0)} seats
                       </p>
                       {plan.occupied_seats && plan.occupied_seats > 0 && (
-                        <p className="text-xs text-green-600 dark:text-green-400 mt-1">
+                        <p className="text-xs text-emerald-600 dark:text-emerald-400 mt-1">
                           {plan.occupied_seats} students assigned
                         </p>
                       )}
                       {plan.image_path && (
-                        <p className="text-xs text-blue-600 dark:text-blue-400 mt-1">
-                          📸 Image-based plan
+                        <p className="text-xs text-blue-600 dark:text-blue-400 mt-1 flex items-center gap-1">
+                          <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" /></svg>
+                          Image-based plan
                         </p>
                       )}
                     </div>
@@ -654,9 +659,9 @@ function AdminSeatingPlans() {
                         View
                       </Button>
                       <Button 
-                        variant="secondary"
+                        variant="gradient-success"
                         onClick={() => handleDuplicate(plan.id)}
-                        className="text-xs py-1 px-2 text-green-700 bg-green-50 hover:bg-green-100 border-green-200"
+                        className="text-xs py-1 px-2"
                         title="Create a fresh copy of this plan for a new exam"
                       >
                         Duplicate
@@ -669,24 +674,24 @@ function AdminSeatingPlans() {
                               setSelectedPlanForMarking(plan);
                               setShowImageMarkerModal(true);
                             }}
-                            className="text-xs py-1 px-2"
+                            className="text-xs py-1 px-2 bg-indigo-600 hover:bg-indigo-700 text-white"
                             title="Edit marked seat positions"
                           >
-                            📍 Seats
+                            Seats
                           </Button>
                         </>
                       )}
                       <Button 
                         variant="secondary"
                         onClick={() => handleEdit(plan)}
-                        className="text-xs py-1 px-2"
+                        className="text-xs py-1 px-2 bg-amber-500 hover:bg-amber-600 text-white"
                       >
                         Edit
                       </Button>
                       <Button 
                         variant="danger"
                         onClick={() => handleDelete(plan.id)}
-                        className="text-xs py-1 px-2"
+                        className="text-xs py-1 px-2 bg-red-600 hover:bg-red-700 text-white"
                       >
                         Delete
                       </Button>
@@ -702,8 +707,8 @@ function AdminSeatingPlans() {
 
       {/* View Modal */}
       {currentPlan && (
-        <div className="fixed inset-0 bg-black/50 flex items-start sm:items-center justify-center p-2 sm:p-4 z-50 overflow-y-auto">
-          <Card className="w-full max-w-4xl max-h-[90vh] overflow-y-auto my-4">
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-start sm:items-center justify-center p-2 sm:p-4 z-50 overflow-y-auto">
+          <Card glass hover={false} className="w-full max-w-4xl max-h-[90vh] overflow-y-auto my-4 !rounded-2xl">
             <Card.Header className="flex items-center justify-between">
               <div className="flex items-center gap-4">
                 <div className="w-12 h-12 rounded-full bg-blue-50 dark:bg-blue-900 flex items-center justify-center text-blue-700 dark:text-blue-200 font-bold text-lg">
@@ -712,18 +717,18 @@ function AdminSeatingPlans() {
                 <div>
                   <div className="text-lg font-semibold text-gray-900 dark:text-white">{currentPlan.classroom_name || 'Room'}</div>
                   {currentPlan.room_number && (
-                    <div className="text-sm text-gray-600 dark:text-gray-400">🏢 {currentPlan.room_number}</div>
+                    <div className="text-sm text-gray-600 dark:text-gray-400">{currentPlan.room_number}</div>
                   )}
                   {currentPlan.image_path && (
-                    <div className="text-xs text-blue-600 dark:text-blue-400 mt-1">📸 Image-based plan</div>
+                    <div className="text-xs text-blue-600 dark:text-blue-400 mt-1">Image-based plan</div>
                   )}
                 </div>
               </div>
               <button
                 onClick={handleCloseViewer}
-                className="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 text-2xl leading-none"
+                className="w-8 h-8 rounded-xl flex items-center justify-center text-gray-400 hover:text-gray-600 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800 transition-all"
               >
-                ×
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
               </button>
             </Card.Header>
             <Card.Content className="space-y-4">
@@ -817,21 +822,21 @@ function AdminSeatingPlans() {
       )}
       {/* Image Seat Marker Modal */}
       {showImageMarkerModal && selectedPlanForMarking && (
-        <div className="fixed inset-0 bg-black/50 flex items-start sm:items-center justify-center p-2 sm:p-4 z-50 overflow-y-auto">
-          <div className="bg-white dark:bg-gray-800 rounded-lg w-full max-w-4xl my-4 sm:my-8">
-            <div className="sticky top-0 bg-white dark:bg-gray-800 border-b dark:border-gray-700 p-3 sm:p-4 flex justify-between items-center">
-              <h2 className="text-lg font-bold text-gray-900 dark:text-white">
+        <div className="fixed inset-0 bg-black/55 backdrop-blur-sm flex items-start sm:items-center justify-center p-2 sm:p-4 z-50 overflow-y-auto">
+          <div className="bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl rounded-2xl border border-gray-200/60 dark:border-slate-700/40 shadow-2xl w-full max-w-5xl my-4 sm:my-8 overflow-hidden">
+            <div className="sticky top-0 bg-white/95 dark:bg-slate-900/95 backdrop-blur-xl border-b border-gray-200/60 dark:border-slate-700/40 p-3 sm:p-4 flex justify-between items-center z-10">
+              <h2 className="text-lg sm:text-xl font-extrabold tracking-tight text-gray-900 dark:text-white">
                 {selectedPlanForMarking.image_path ? 'Edit' : 'Create'} Seating Plan: {selectedPlanForMarking.classroom_name}
               </h2>
               <button
                 onClick={() => setShowImageMarkerModal(false)}
-                className="text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200 text-2xl"
+                className="w-8 h-8 rounded-xl flex items-center justify-center text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-gray-100 dark:hover:bg-slate-800 transition-all"
               >
-                ✕
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
               </button>
             </div>
 
-            <div className="p-3 sm:p-6 max-h-[calc(100vh-200px)] overflow-y-auto">
+            <div className="p-3 sm:p-6 max-h-[calc(100vh-180px)] overflow-y-auto hide-scrollbar">
               <ImageSeatMarker
                 planId={selectedPlanForMarking.id}
                 plan={selectedPlanForMarking}

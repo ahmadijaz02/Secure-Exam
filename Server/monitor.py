@@ -1,8 +1,8 @@
 """Integrated Exam Monitoring System with Flask streaming support.
 
-Combines the advanced MediaPipe hand/face detection from exam_monitor.py
-with the Flask streaming format (FRAME: and ALERT: outputs) required by the
-Flask parent process to forward to Socket.IO clients.
+Combines MediaPipe face detection/refinement with the Flask streaming format
+(FRAME: and ALERT: outputs) required by the Flask parent process to forward
+to Socket.IO clients.
 """
 
 from __future__ import annotations
@@ -188,13 +188,13 @@ if not os.path.isabs(YOLO_MODEL_PATH):
 
 YOLO_CLASSES = [cls.strip() for cls in os.environ.get(
     "YOLO_WORLD_CLASSES",
-    "head, face, person, human hand, hand, open hand, raised hand, palm, left hand, right hand, mobile phone, laptop, tablet, paper, wrist watch, exam paper, answer sheet, question paper",
+    "head, face, person, mobile phone, laptop, tablet, paper, wrist watch, exam paper, answer sheet, question paper",
 ).split(",") if cls.strip()]
 
 # Extended YOLO classes from exam_monitor.py
 EXTENDED_YOLO_CLASSES = [
     # People / body parts for top-view tracking and crop extraction
-    "head", "face", "person", "human hand", "hand", "hands", "palm", "open hand", "raised hand", "left hand", "right hand", "finger", "fingers",
+    "head", "face", "person",
     # Benign digital devices to reduce phone false positives
     "laptop", "notebook computer", "tablet", "ipad",
     # Mobile phones - clear identifiers
@@ -218,21 +218,14 @@ OBJECT_DRAW_MIN_CONF = _env_float("OBJECT_DRAW_MIN_CONF", max(0.25, MODEL_INFER_
 
 # MediaPipe configuration (aligned with exam_monitor.py)
 MEDIAPIPE_PROCESS_EVERY = _env_int_profiled("MEDIAPIPE_PROCESS_EVERY", 4)
-HAND_GESTURE_ENABLED = _env_bool_profiled("HAND_GESTURE_ENABLED", True)
-HAND_GESTURE_MIN_CONFIDENCE = _env_float_profiled("HAND_GESTURE_MIN_CONFIDENCE", 0.5)
-HAND_GESTURE_REQUIRE_FRAMES = _env_int_profiled("HAND_GESTURE_REQUIRE_FRAMES", 4)
 MEDIAPIPE_CROP_SIZE = max(128, _env_int_profiled("MEDIAPIPE_CROP_SIZE", 256))
 MEDIAPIPE_MAX_CROPS_PER_FRAME = max(1, _env_int_profiled("MEDIAPIPE_MAX_CROPS_PER_FRAME", 8))
 MEDIAPIPE_CROP_PADDING = max(0.0, _env_float_profiled("MEDIAPIPE_CROP_PADDING", 0.18))
 MEDIAPIPE_HEAD_MIN_CONF = _env_float_profiled("MEDIAPIPE_HEAD_MIN_CONF", 0.28)
-MEDIAPIPE_HAND_MIN_CONF = _env_float_profiled("MEDIAPIPE_HAND_MIN_CONF", 0.25)
 MEDIAPIPE_MAX_HEAD_CROPS = max(1, _env_int_profiled("MEDIAPIPE_MAX_HEAD_CROPS", 6))
-MEDIAPIPE_MAX_HAND_CROPS = max(1, _env_int_profiled("MEDIAPIPE_MAX_HAND_CROPS", 4))
 MEDIAPIPE_PERSON_MIN_CONF = _env_float_profiled("MEDIAPIPE_PERSON_MIN_CONF", 0.20)
 MEDIAPIPE_FACE_DET_MIN_CONF = _env_float_profiled("MEDIAPIPE_FACE_DET_MIN_CONF", 0.20)
 MEDIAPIPE_FACE_TRACK_MIN_CONF = _env_float_profiled("MEDIAPIPE_FACE_TRACK_MIN_CONF", 0.20)
-MEDIAPIPE_ENABLE_PERSON_HAND_PROXY = _env_bool_profiled("MEDIAPIPE_ENABLE_PERSON_HAND_PROXY", True)
-MEDIAPIPE_MAX_PERSON_HAND_PROXIES = max(0, _env_int_profiled("MEDIAPIPE_MAX_PERSON_HAND_PROXIES", 4))
 
 # Alert configuration
 ALERT_CONFIRM_FRAMES = max(1, _env_int("ALERT_CONFIRM_FRAMES", 3))
@@ -244,7 +237,6 @@ ALERT_COOLDOWN_SEC        = _env_float("ALERT_COOLDOWN_SEC", 10.0)    # default 
 PAPER_ALERT_COOLDOWN_SEC  = _env_float("PAPER_ALERT_COOLDOWN_SEC", 15.0)   # paper passing
 WATCH_ALERT_COOLDOWN_SEC  = _env_float("WATCH_ALERT_COOLDOWN_SEC", 10.0)   # watch
 HEAD_ALERT_COOLDOWN_SEC   = _env_float("HEAD_ALERT_COOLDOWN_SEC", 10.0)    # head turns
-HAND_ALERT_COOLDOWN_SEC   = _env_float("HAND_ALERT_COOLDOWN_SEC", 10.0)    # hand signals
 
 # ---------------------------------------------------------------------------
 # Detection classes
@@ -371,9 +363,6 @@ FRIENDLY_LABELS = {
     "HEAD_LEFT": "Head Looking Left",
     "HEAD_RIGHT": "Head Looking Right",
     "HEAD_DOWN": "Head Down",
-    "HAND_SIGNAL": "Hand Signal",
-    "HAND_MOUTH": "Hand Near Mouth",
-    "SIGN_LANGUAGE_CHEATING": "Sign Language Cheating",
     # Raw YOLO class names → unified category labels
     "mobile phone": "Phone Detected",
     "cell phone": "Phone Detected",
@@ -481,7 +470,6 @@ class ViolationTracker:
             "watch": 0,
             "head_turn": 0,
             "head_down": 0,
-            "hand_signal": 0,
         }
         self._last_alert = {}
 
@@ -498,7 +486,7 @@ class ViolationTracker:
         return False
 
 # ---------------------------------------------------------------------------
-# MediaPipe Hand and Face Movement Detector (from exam_monitor.py)
+# MediaPipe Face Movement Detector (from exam_monitor.py)
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -508,7 +496,7 @@ class NormalizedPoint:
     z: float = 0.0
 
 
-class HandFaceMovementDetector:
+class FaceMovementDetector:
     def __init__(self):
         # Detection thresholds
         self.YAW_THRESHOLD = 70  # degrees - head turn left/right
@@ -520,20 +508,10 @@ class HandFaceMovementDetector:
         self.RISK_WEIGHTS = {
             "head_turn": 50,
             "head_down": 50,
-            "hand_signal": 100,
         }
-        
-        # Suspicious gestures
-        self.SUSPICIOUS_GESTURES = {"1", "2", "3", "4", "5", "high_five"}
-        
-        # Finger landmarks
-        self.FINGER_TIPS = [4, 8, 12, 16, 20]
-        self.FINGER_PIPS = [3, 6, 10, 14, 18]
-        self.FINGER_MCPS = [2, 5, 9, 13, 17]
         
         # Initialize MediaPipe
         self.face_mesh = None
-        self.hands_sol = None
         if mp is not None:
             self.face_mesh = mp.solutions.face_mesh.FaceMesh(
                 max_num_faces=1,
@@ -541,16 +519,9 @@ class HandFaceMovementDetector:
                 min_detection_confidence=MEDIAPIPE_FACE_DET_MIN_CONF,
                 min_tracking_confidence=MEDIAPIPE_FACE_TRACK_MIN_CONF,
             )
-            self.hands_sol = mp.solutions.hands.Hands(
-                max_num_hands=2,
-                model_complexity=1,
-                min_detection_confidence=0.35,
-                min_tracking_confidence=0.35,
-            )
         
         # Student tracking
         self.students = {}
-        self.gesture_tracker = {}
         self.last_alert = {}
         self._last_violations: List[Dict[str, object]] = []
         self._last_overlay_data: List[Dict[str, object]] = []
@@ -586,81 +557,6 @@ class HandFaceMovementDetector:
 
         return float(yaw_s), float(pitch_s)
     
-    def classify_gesture(self, lm):
-        """Classify hand gesture with strict structural validation to avoid false positives."""
-            
-        extended = []
-        for i, (tip, pip, mcp) in enumerate(zip(self.FINGER_TIPS, self.FINGER_PIPS, self.FINGER_MCPS)):
-            # Distance from tip to base knuckle (mcp)
-            tip_mcp_dist = np.hypot(lm[tip].x - lm[mcp].x, lm[tip].y - lm[mcp].y)
-            # Distance from first joint (pip) to base knuckle (mcp)
-            pip_mcp_dist = np.hypot(lm[pip].x - lm[mcp].x, lm[pip].y - lm[mcp].y)
-            
-            if i == 0:  # Thumb
-                extended.append(tip_mcp_dist > 0.05)
-            else:
-                # Finger must be fully uncurled (tip far away from mcp) AND pointing upwards
-                is_straight = tip_mcp_dist > (pip_mcp_dist * 1.5)
-                is_up = lm[tip].y < lm[pip].y
-                extended.append(is_straight and is_up)
-
-        # Count extended main fingers (Index, Middle, Ring, Pinky)
-        finger_count = sum(extended[1:])
-        
-        # If all 4 main fingers are curled/closed, ignore (prevents counting fists/thumbs as signals)
-        if finger_count == 0:
-            return "none"
-        elif finger_count == 1:
-            return "1"
-        elif finger_count == 2:
-            return "2"
-        elif finger_count == 3:
-            return "3"
-        elif finger_count == 4 and not extended[0]:
-            return "4"
-        elif finger_count == 4 and extended[0]:
-            return "5"
-        
-        return "none"
-    
-    def is_confident_counting_gesture(self, gesture_type, student_id):
-        """Determine if counting gesture is deliberate and confident."""
-        if gesture_type not in {"1", "2", "3", "4", "5"}:
-            if student_id in self.gesture_tracker:
-                self.gesture_tracker[student_id]["gesture"] = "none"
-                self.gesture_tracker[student_id]["frames"] = 0
-            return False
-        
-        if student_id not in self.gesture_tracker:
-            self.gesture_tracker[student_id] = {"gesture": "none", "frames": 0}
-        
-        tracker = self.gesture_tracker[student_id]
-        
-        if tracker.get("gesture") != gesture_type:
-            tracker["gesture"] = gesture_type
-            tracker["frames"] = 1
-            return False
-        
-        tracker["frames"] = tracker.get("frames", 0) + 1
-        return tracker["frames"] >= HAND_GESTURE_REQUIRE_FRAMES
-    
-    def match_hands_to_student(self, hand_multi, face_lms, w, h):
-        """Match hands to a specific student based on proximity to their face."""
-        if not face_lms or not hand_multi:
-            return []
-        
-        face_x = np.mean([lm.x for lm in face_lms])
-        face_y = np.mean([lm.y for lm in face_lms])
-        
-        matched_hands = []
-        for hand in hand_multi:
-            wrist = hand[0]
-            # Match hands that are relatively close to the face horizontally
-            if abs(wrist.x - face_x) < 0.45:
-                matched_hands.append(hand)
-        
-        return matched_hands
-
     def _sanitize_bbox(self, bbox: Sequence[float], frame_w: int, frame_h: int) -> Optional[Tuple[int, int, int, int]]:
         if bbox is None or len(bbox) < 4:
             return None
@@ -714,28 +610,16 @@ class HandFaceMovementDetector:
             mapped.append(NormalizedPoint(x=float(gx), y=float(gy), z=float(getattr(lm, "z", 0.0))))
         return mapped
 
-    def _landmarks_bbox(self, landmarks: Sequence[NormalizedPoint], frame_w: int, frame_h: int) -> Tuple[int, int, int, int]:
-        xs = [lm.x * frame_w for lm in landmarks]
-        ys = [lm.y * frame_h for lm in landmarks]
-        x1 = max(0, int(min(xs)) - 10)
-        y1 = max(0, int(min(ys)) - 10)
-        x2 = min(frame_w - 1, int(max(xs)) + 10)
-        y2 = min(frame_h - 1, int(max(ys)) + 10)
-        return (x1, y1, x2, y2)
-
     def _select_targets(self, detections: Sequence[Dict[str, object]], frame_w: int, frame_h: int) -> List[Dict[str, object]]:
         head_targets: List[Dict[str, object]] = []
-        hand_targets: List[Dict[str, object]] = []
         person_targets: List[Dict[str, object]] = []
         for det in detections:
             category = str(det.get("category", "")).lower()
             conf = float(det.get("conf", 0.0) or 0.0)
             bbox_raw = det.get("bbox")
-            if category not in {"head", "hand", "person"}:
+            if category not in {"head", "person"}:
                 continue
             if category == "head" and conf < MEDIAPIPE_HEAD_MIN_CONF:
-                continue
-            if category == "hand" and conf < MEDIAPIPE_HAND_MIN_CONF:
                 continue
             if category == "person" and conf < MEDIAPIPE_PERSON_MIN_CONF:
                 continue
@@ -751,13 +635,10 @@ class HandFaceMovementDetector:
             }
             if category == "head":
                 head_targets.append(target)
-            elif category == "hand":
-                hand_targets.append(target)
             else:
                 person_targets.append(target)
 
         head_targets.sort(key=lambda item: float(item["conf"]), reverse=True)
-        hand_targets.sort(key=lambda item: float(item["conf"]), reverse=True)
         person_targets.sort(key=lambda item: float(item["conf"]), reverse=True)
 
         # If head detections are weak/missing, synthesize head crops from top area of person boxes.
@@ -803,68 +684,12 @@ class HandFaceMovementDetector:
                 if len(head_targets) >= MEDIAPIPE_MAX_HEAD_CROPS:
                     break
 
-        # If YOLO does not produce reliable hand boxes, synthesize hand proxy crops
-        # from upper-left and upper-right person regions (works better for raised hands).
-        if MEDIAPIPE_ENABLE_PERSON_HAND_PROXY and len(hand_targets) < MEDIAPIPE_MAX_HAND_CROPS:
-            hand_seen: set = set(tuple(t["bbox"]) for t in hand_targets)
-            proxy_added = 0
-            for person in person_targets:
-                x1, y1, x2, y2 = person["bbox"]
-                pw = max(1, x2 - x1)
-                ph = max(1, y2 - y1)
-
-                # Hand zones: left/right upper body quadrants where signaling usually appears.
-                candidates = [
-                    (
-                        x1,
-                        y1,
-                        x1 + int(0.42 * pw),
-                        y1 + int(0.58 * ph),
-                    ),
-                    (
-                        x2 - int(0.42 * pw),
-                        y1,
-                        x2,
-                        y1 + int(0.58 * ph),
-                    ),
-                ]
-
-                for candidate_bbox in candidates:
-                    proxy_bbox = self._pad_bbox(candidate_bbox, frame_w, frame_h)
-                    key = tuple(proxy_bbox)
-                    if key in hand_seen:
-                        continue
-
-                    hand_targets.append({
-                        "category": "hand",
-                        "conf": max(float(person["conf"]) * 0.65, MEDIAPIPE_HAND_MIN_CONF),
-                        "bbox": proxy_bbox,
-                    })
-                    hand_seen.add(key)
-                    proxy_added += 1
-
-                    if proxy_added >= MEDIAPIPE_MAX_PERSON_HAND_PROXIES:
-                        break
-                    if len(hand_targets) >= MEDIAPIPE_MAX_HAND_CROPS:
-                        break
-
-                if proxy_added >= MEDIAPIPE_MAX_PERSON_HAND_PROXIES:
-                    break
-                if len(hand_targets) >= MEDIAPIPE_MAX_HAND_CROPS:
-                    break
-
-        hand_targets.sort(key=lambda item: float(item["conf"]), reverse=True)
-
         selected_heads = head_targets[:MEDIAPIPE_MAX_HEAD_CROPS]
-        remaining_slots = max(0, MEDIAPIPE_MAX_CROPS_PER_FRAME - len(selected_heads))
-        selected_hands = hand_targets[:min(MEDIAPIPE_MAX_HAND_CROPS, remaining_slots)]
-
-        # Prioritize student heads first so multi-student tracking remains stable.
-        return selected_heads + selected_hands
+        return selected_heads
     
     def detect(self, frame_bgr, yolo_detections: Sequence[Dict[str, object]], frame_idx: int):
         """Run MediaPipe only on YOLO crops for robust far-angle analysis."""
-        if self.face_mesh is None or self.hands_sol is None:
+        if self.face_mesh is None:
             return [], []
 
         # Cache output between MediaPipe passes to preserve overlays/alerts.
@@ -882,7 +707,6 @@ class HandFaceMovementDetector:
             return [], []
 
         face_entries: List[Tuple[str, List[NormalizedPoint], Tuple[int, int, int, int], float, float, Dict[str, bool]]] = []
-        hand_entries: List[Tuple[List[NormalizedPoint], str]] = []
 
         for idx, target in enumerate(targets):
             bbox = target["bbox"]
@@ -911,7 +735,6 @@ class HandFaceMovementDetector:
                         "flags": {k: False for k in self.RISK_WEIGHTS},
                         "head_yaw": 0.0,
                         "head_pitch": 0.0,
-                        "gesture": "none",
                         "last_alert": 0.0,
                     }
 
@@ -925,50 +748,8 @@ class HandFaceMovementDetector:
 
                 face_entries.append((student_id, face_lms, bbox, yaw, pitch, flags))
 
-            elif category == "hand" and HAND_GESTURE_ENABLED:
-                hand_results = self.hands_sol.process(rgb_crop)
-                if not hand_results.multi_hand_landmarks:
-                    continue
-                for hand_lm in hand_results.multi_hand_landmarks:
-                    hand_lms = self._map_landmarks_to_global(hand_lm.landmark, bbox, w, h)
-                    gesture = self.classify_gesture(hand_lms)
-                    hand_entries.append((hand_lms, gesture))
-
-        for hand_lms, gesture in hand_entries:
-            overlay_data.append({
-                "type": "hands",
-                "landmarks": [hand_lms],
-                "gesture": gesture,
-            })
-
-        # Fallback: generate hand-signal violations directly from confident hand gestures,
-        # even if hand->face matching is unstable for a few frames.
-        direct_hand_violations: List[Dict[str, object]] = []
-        for hand_lms, gesture in hand_entries:
-            hx = float(np.mean([lm.x for lm in hand_lms]))
-            hy = float(np.mean([lm.y for lm in hand_lms]))
-            hand_track_id = f"hand_{int(hx * 12)}_{int(hy * 12)}"
-            if self.is_confident_counting_gesture(gesture, hand_track_id):
-                direct_hand_violations.append({
-                    "type": "hand_signal",
-                    "description": f"Suspicious hand gesture: {gesture}",
-                    "student_id": hand_track_id,
-                    "confidence": 0.95,
-                    "face_bbox": self._landmarks_bbox(hand_lms, w, h),
-                })
-
-        # Associate hands to nearest head and evaluate hand-signal violations.
         for student_id, face_lms, face_bbox, yaw, pitch, flags in face_entries:
-            hands_for_student = self.match_hands_to_student([entry[0] for entry in hand_entries], face_lms, w, h)
-            matched_gestures: List[str] = []
-            for hand_lms, gesture in hand_entries:
-                if hand_lms in hands_for_student and self.is_confident_counting_gesture(gesture, student_id):
-                    flags["hand_signal"] = True
-                if hand_lms in hands_for_student:
-                    matched_gestures.append(gesture)
-            
             student = self.students[student_id]
-            student["gesture"] = matched_gestures[0] if matched_gestures else "none"
             student["flags"] = flags
 
             raw = sum(self.RISK_WEIGHTS[k] for k, v in flags.items() if v)
@@ -997,14 +778,6 @@ class HandFaceMovementDetector:
                             "confidence": student["risk_score"] / 100.0,
                             "face_bbox": face_bbox,
                         })
-                    elif flag == "hand_signal":
-                        violations.append({
-                            "type": "hand_signal",
-                            "description": f"Suspicious hand gesture: {student.get('gesture', 'none')}",
-                            "student_id": student_id,
-                            "confidence": student["risk_score"] / 100.0,
-                            "face_bbox": face_bbox,
-                        })
 
                 student["last_alert"] = now
 
@@ -1017,23 +790,17 @@ class HandFaceMovementDetector:
                 "flags": flags
             })
 
-        # Keep direct gesture alerts if face-matching produced no hand-signal flags.
-        if direct_hand_violations:
-            violations.extend(direct_hand_violations)
-
         self._last_violations = violations
         self._last_overlay_data = overlay_data
         return violations, overlay_data
 
     def draw_overlay(self, frame, overlay_data):
-        """Draw face and hand overlays on frame."""
+        """Draw face overlays on frame."""
         h, w = frame.shape[:2]
         
         for data in overlay_data:
             if data["type"] == "face":
                 self._draw_face_overlay(frame, data, w, h)
-            elif data["type"] == "hands":
-                self._draw_hand_overlay(frame, data, w, h)
     
     def _draw_face_overlay(self, frame, data, w, h):
         """Draw face detection overlay."""
@@ -1080,32 +847,6 @@ class HandFaceMovementDetector:
         
         cv2.putText(frame, status_text, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
     
-    def _draw_hand_overlay(self, frame, data, w, h):
-        """Draw hand detection overlay."""
-        hand_multi = data["landmarks"]
-        gesture = data["gesture"]
-        
-        CONNECTIONS = [
-            (0,1),(1,2),(2,3),(3,4),
-            (0,5),(5,6),(6,7),(7,8),
-            (0,9),(9,10),(10,11),(11,12),
-            (0,13),(13,14),(14,15),(15,16),
-            (0,17),(17,18),(18,19),(19,20),
-            (5,9),(9,13),(13,17)
-        ]
-        
-        for lm in hand_multi:
-            pts = [(int(p.x*w), int(p.y*h)) for p in lm]
-            for a, b in CONNECTIONS:
-                cv2.line(frame, pts[a], pts[b], (0, 165, 255), 1)
-            for i, pt in enumerate(pts):
-                r = 5 if i == 0 else 3
-                cv2.circle(frame, pt, r, (255, 255, 255) if i == 0 else (0, 165, 255), -1)
-        
-        # Draw gesture text
-        if gesture != "none" and gesture != "closed":
-            cv2.putText(frame, f"Gesture: {gesture}", (10, h - 100), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2, cv2.LINE_AA)
-    
     def _draw_dashed_rect(self, img, x1, y1, x2, y2, color, thickness, gap=10):
         """Draw dashed rectangle."""
         for side in [(x1,y1,x2,y1),(x2,y1,x2,y2),(x2,y2,x1,y2),(x1,y2,x1,y1)]:
@@ -1125,10 +866,6 @@ class HandFaceMovementDetector:
 
 class YOLOWorldDetector:
     HEAD_CLASSES = {"head", "face", "human head", "human face"}
-    HAND_CLASSES = {
-        "hand", "hands", "human hand", "palm", "left hand", "right hand",
-        "open hand", "raised hand", "finger", "fingers", "left palm", "right palm",
-    }
     PERSON_CLASSES = {"person", "human", "student"}
     LAPTOP_CLASSES = {"laptop", "notebook computer", "notebook", "tablet", "ipad"}
     MOBILE_CLASSES = {
@@ -1197,16 +934,10 @@ class YOLOWorldDetector:
             is_mobile_like = label_lower in self.MOBILE_CLASSES or any(
                 tok in label_lower for tok in ["phone", "smartphone", "cell phone", "cellphone", "mobile"]
             )
-            is_hand_like = label_lower in self.HAND_CLASSES or any(
-                tok in label_lower for tok in ["hand", "palm", "finger"]
-            )
-
             if label_lower in self.HEAD_CLASSES:
                 category = "head"
             elif is_mobile_like:
                 category = "mobile"
-            elif is_hand_like and not is_mobile_like:
-                category = "hand"
             elif label_lower in self.PERSON_CLASSES or "person" in label_lower:
                 category = "person"
             elif label_lower in self.LAPTOP_CLASSES:
@@ -1438,15 +1169,14 @@ def main():
             "paper_swap": PAPER_ALERT_COOLDOWN_SEC,  # 45 s
             "head_turn":  HEAD_ALERT_COOLDOWN_SEC,   # 20 s
             "head_down":  HEAD_ALERT_COOLDOWN_SEC,   # 20 s
-            "hand_signal": HAND_ALERT_COOLDOWN_SEC,  # 20 s
         }
     )
     
     # Initialize YOLO detector
     yolo = YOLOWorldDetector(YOLO_MODEL_PATH, YOLO_CLASSES + EXTENDED_YOLO_CLASSES)
     
-    # Initialize MediaPipe hand/face detector
-    handface_detector = HandFaceMovementDetector()
+    # Initialize MediaPipe face detector
+    face_detector = FaceMovementDetector()
     
     # Open camera
     cap = open_capture()
@@ -1462,8 +1192,8 @@ def main():
     # Main loop variables
     frame_idx = 0
     last_detections: List[Dict] = []
-    last_handface_violations: List[Dict] = []
-    last_handface_overlay_data: List[Dict] = []
+    last_face_violations: List[Dict] = []
+    last_face_overlay_data: List[Dict] = []
 
     # Carry the last good frame so we can keep drawing / emitting even when
     # the RTSP reader thread is mid-reconnect and briefly has no new frames.
@@ -1544,13 +1274,13 @@ def main():
                         yolo_payload = frame.copy()
             
             # MediaPipe refinement is crop-based and internally throttled.
-            handface_violations, handface_overlay_data = handface_detector.detect(
+            face_violations, face_overlay_data = face_detector.detect(
                 frame,
                 last_detections,
                 frame_idx,
             )
-            last_handface_violations = handface_violations
-            last_handface_overlay_data = handface_overlay_data
+            last_face_violations = face_violations
+            last_face_overlay_data = face_overlay_data
             
             # Process YOLO detections for alerts
             for detection in last_detections:
@@ -1563,12 +1293,12 @@ def main():
                     bbox = detection["bbox"]
                     
                     # Logic for Paper Passing: only alert if the paper is physically passed away from personal space
-                    if category == "paper" and last_handface_overlay_data:
+                    if category == "paper" and last_face_overlay_data:
                         paper_cx = (bbox[0] + bbox[2]) / 2.0
                         frame_w = frame.shape[1]
                         
                         is_passing = True
-                        faces_lms = [d["landmarks"] for d in last_handface_overlay_data if d["type"] == "face"]
+                        faces_lms = [d["landmarks"] for d in last_face_overlay_data if d["type"] == "face"]
                         
                         for face_lm in faces_lms:
                             xs = [lm.x * frame_w for lm in face_lm]
@@ -1600,14 +1330,12 @@ def main():
                             _beep(category)
             
             # Process MediaPipe violations for alerts
-            for violation in last_handface_violations:
+            for violation in last_face_violations:
                 violation_type = violation["type"]
                 if violation_type == "head_turn":
                     alert_reason = "HEAD_LEFT" if "LEFT" in violation["description"] else "HEAD_RIGHT"
                 elif violation_type == "head_down":
                     alert_reason = "HEAD_DOWN"
-                elif violation_type == "hand_signal":
-                    alert_reason = "HAND_SIGNAL"
                 else:
                     continue
                 
@@ -1635,9 +1363,6 @@ def main():
                 if category == "head":
                     color = (255, 255, 0)  # Cyan
                     label_text = "HEAD"
-                elif category == "hand":
-                    color = (0, 165, 255)  # Orange
-                    label_text = "HAND"
                 elif category == "person":
                     color = (200, 200, 200)  # Light gray
                     label_text = "PERSON"
@@ -1659,8 +1384,8 @@ def main():
                 cv2.rectangle(frame, (x1, y1 - text_h - 8), (x1 + text_w + 8, y1), color, -1)
                 cv2.putText(frame, label_text, (x1 + 4, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
             
-            # MediaPipe overlays enabled - showing hand and face detection without bounding boxes
-            handface_detector.draw_overlay(frame, handface_overlay_data)
+            # MediaPipe overlays enabled - showing face detection without bounding boxes
+            face_detector.draw_overlay(frame, face_overlay_data)
             
             # Draw FPS (disabled for cleaner frontend feed)
             # cv2.putText(frame, f"FPS: {fps:.1f}", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2, cv2.LINE_AA)
