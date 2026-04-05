@@ -443,10 +443,13 @@ class NormalizedPoint:
 
 class FaceMovementDetector:
     def __init__(self):
-        # NOTE: yaw is computed as ((l_dist - r_dist) / total * 90)
-        # which is bounded to roughly ±40–45° max. Keep threshold well below 45.
+
         self.YAW_THRESHOLD = 22   # degrees — was 70 (unreachable), now 22 for natural side-glances
         self.PITCH_DOWN_THRESH = -8   # degrees — slightly more sensitive than before
+
+        self.YAW_THRESHOLD = 70  
+        self.PITCH_DOWN_THRESH = -10  
+
         self.ALERT_THRESHOLD = 30  
         self.ALERT_COOLDOWN = 2.0  
         
@@ -716,8 +719,11 @@ class FaceMovementDetector:
                     elif flag == "head_down":
                         violations.append({
                             "type": "head_down", 
+
                             "direction": "DOWN",
                             "description": f"Looking down (pitch={pitch:.1f}°)",
+
+                            "description": f"Looking down (pitch {pitch:.1f}°)",
                             "student_id": student_id,
                             "confidence": student["risk_score"] / 100.0,
                             "face_bbox": face_bbox,
