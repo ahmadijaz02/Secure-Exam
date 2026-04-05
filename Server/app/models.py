@@ -24,7 +24,6 @@ class User(MongoModel):
     def __init__(self, db):
         super().__init__(db)
         self.collection = db.users
-        # Create unique index on email
         self.collection.create_index("email", unique=True)
 
     def create_user(self, name, email, password, role='teacher'):
@@ -130,7 +129,6 @@ class ExamSession(MongoModel):
     def __init__(self, db):
         super().__init__(db)
         self.collection = db.exam_sessions
-        # Create index on teacher_id for faster queries
         self.collection.create_index("teacher_id")
 
     def create_session(self, name, description, teacher_id, start_time, end_time, 
@@ -143,7 +141,7 @@ class ExamSession(MongoModel):
             'start_time': start_time,
             'end_time': end_time,
             'classroom': classroom,
-            'classrooms': classrooms or [],  # List of classroom configs with seating plans
+            'classrooms': classrooms or [],  
             'is_active': False,
             'created_at': datetime.utcnow(),
             'updated_at': datetime.utcnow()
@@ -197,7 +195,6 @@ class Incident(MongoModel):
     def __init__(self, db):
         super().__init__(db)
         self.collection = db.incidents
-        # Create indexes for faster queries
         self.collection.create_index("exam_session_id")
         self.collection.create_index("incident_type")
         self.collection.create_index("created_at")
@@ -205,19 +202,6 @@ class Incident(MongoModel):
     def create_incident(self, exam_session_id, incident_type, description=None,
                        image_url=None, confidence_score=None, student_id=None, 
                        student_name=None, roll_number=None, seat_number=None):
-        """Create a new incident
-        
-        Args:
-            exam_session_id: ID of the exam session
-            incident_type: Type of incident (e.g., PHONE_DETECTED, CHEATING)
-            description: Description of the incident
-            image_url: URL of evidence image
-            confidence_score: Confidence score if ML-based detection
-            student_id: ID of student involved (if identified)
-            student_name: Name of student involved (if identified)
-            roll_number: Roll number of student involved (if identified)
-            seat_number: Seat number where incident occurred (for image-based seating)
-        """
         incident_doc = {
             'exam_session_id': exam_session_id,
             'incident_type': incident_type,
@@ -226,10 +210,10 @@ class Incident(MongoModel):
             'confidence_score': confidence_score,
             'is_reviewed': False,
             'reviewer_notes': None,
-            'student_id': student_id,  # Student identified through seating plan
+            'student_id': student_id,  
             'student_name': student_name,
             'roll_number': roll_number,
-            'seat_number': seat_number,  # Seat where incident occurred
+            'seat_number': seat_number,  
             'created_at': datetime.utcnow()
         }
 
@@ -277,27 +261,12 @@ class SeatingPlan(MongoModel):
         self.collection.create_index("exam_session_id")
     
     def create_seating_plan(self, classroom_name, rows, columns, seats_data=None, exam_session_id=None, room_number=None, total_seats=None, image_path=None, is_image_based=False):
-        """Create a new seating plan
-        
-        Args:
-            classroom_name: Name of the classroom
-            rows: Number of rows (0 for image-based flexible layout)
-            columns: Number of columns (0 for image-based flexible layout)
-            seats_data: List of seat objects with optional pixel coordinates for image-based plans
-            exam_session_id: ID of the exam session this plan belongs to (optional)
-            room_number: Room number for display (optional)
-            total_seats: Total number of seats (optional, overrides calculated value)
-            image_path: Path to the classroom image (for image-based plans)
-            is_image_based: Whether this is an image-based seating plan
-        """
         seats_data = seats_data or []
         occupied_seats = len([
             s for s in seats_data
             if s.get('occupied') or s.get('student_name') or s.get('roll_number')
         ])
         
-        # Determine total seats: use provided value, or calculate from rows/columns,
-        # or use the number of provided seats (image-based plans)
         if total_seats is not None:
             computed_total = total_seats
         else:
@@ -305,13 +274,13 @@ class SeatingPlan(MongoModel):
 
         plan_doc = {
             'classroom_name': classroom_name,
-            'exam_session_id': exam_session_id,  # Link to exam session
-            'room_number': room_number,  # Room number for display (e.g., "Room 101")
+            'exam_session_id': exam_session_id,  
+            'room_number': room_number,  
             'rows': rows,
             'columns': columns,
-            'is_image_based': is_image_based,  # Whether this plan uses image-based seating
-            'image_path': image_path,  # Path to the classroom image
-            'seats': seats_data,  # List of seat objects with pixel coordinates for image-based plans
+            'is_image_based': is_image_based,  
+            'image_path': image_path,  
+            'seats': seats_data,  
             'total_seats': computed_total,
             'occupied_seats': occupied_seats,
             'created_at': datetime.utcnow(),
@@ -380,17 +349,6 @@ class SeatingPlan(MongoModel):
             return None
     
     def find_student_by_pixel_proximity(self, plan_id, pixel_x, pixel_y, tolerance_pixels=50):
-        """Find student at or near pixel coordinates (for image-based seating plans)
-        
-        Args:
-            plan_id: ID of the seating plan
-            pixel_x: X coordinate of the incident (in original image pixels)
-            pixel_y: Y coordinate of the incident (in original image pixels)
-            tolerance_pixels: Maximum distance in pixels to consider as "at seat"
-        
-        Returns:
-            Student info if found, otherwise None
-        """
         try:
             plan = self.find_by_id(plan_id)
             if not plan or not plan.get('is_image_based'):
@@ -400,19 +358,16 @@ class SeatingPlan(MongoModel):
             closest_seat = None
             closest_distance = float('inf')
             
-            # Find the closest seat to the pixel coordinates
             for seat in seats:
                 seat_x = seat.get('pixel_x', 0)
                 seat_y = seat.get('pixel_y', 0)
                 
-                # Calculate Euclidean distance
                 distance = ((seat_x - pixel_x) ** 2 + (seat_y - pixel_y) ** 2) ** 0.5
                 
                 if distance < closest_distance:
                     closest_distance = distance
                     closest_seat = seat
             
-            # If closest seat is within tolerance and has a student, return it
             if closest_seat and closest_distance <= tolerance_pixels and closest_seat.get('student_name'):
                 return {
                     'seat_number': closest_seat.get('seat_number'),
@@ -442,13 +397,11 @@ class SeatingPlan(MongoModel):
             if not plan:
                 return None
             
-            # Remove _id and id so mongo generates a new one
             if '_id' in plan:
                 del plan['_id']
             if 'id' in plan:
                 del plan['id']
                 
-            # Clear session bindings
             plan['exam_session_id'] = None
             if 'assigned_session_id' in plan:
                 plan['assigned_session_id'] = None
@@ -457,7 +410,6 @@ class SeatingPlan(MongoModel):
             if 'is_assigned' in plan:
                 plan['is_assigned'] = False
             
-            # Clear student data from seats
             for seat in plan.get('seats', []):
                 if 'student_name' in seat:
                     seat['student_name'] = ''
@@ -470,10 +422,8 @@ class SeatingPlan(MongoModel):
                 if 'occupied' in seat:
                     seat['occupied'] = False
                 
-            # Update name
             plan['classroom_name'] = f"{plan.get('classroom_name', 'Plan')} (Copy)"
             
-            # Clear timestamps and occupied count
             plan['occupied_seats'] = 0
             plan['created_at'] = datetime.utcnow()
             plan['updated_at'] = datetime.utcnow()

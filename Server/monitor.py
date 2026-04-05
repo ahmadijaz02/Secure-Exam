@@ -1,10 +1,3 @@
-"""Integrated Exam Monitoring System with Flask streaming support.
-
-Combines MediaPipe face detection/refinement with the Flask streaming format
-(FRAME: and ALERT: outputs) required by the Flask parent process to forward
-to Socket.IO clients.
-"""
-
 from __future__ import annotations
 
 import base64
@@ -31,19 +24,17 @@ except ImportError:
     mediapipe = None
     mp = None
 
+from handgesture import HandGestureDetector
+
 try:
-    import onnxruntime as ort  # type: ignore[reportMissingImports]
+    import onnxruntime as ort  
 except Exception:
     ort = None
 
 try:
-    import winsound  # Windows-only
+    import winsound  
 except Exception:
     winsound = None
-
-# ---------------------------------------------------------------------------
-# Environment helpers (from original monitor.py)
-# ---------------------------------------------------------------------------
 
 def _env_int(name: str, default: int) -> int:
     try:
@@ -64,7 +55,6 @@ def _env_bool(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 def _profiled_env(name: str, default: Optional[str] = None) -> Optional[str]:
-    """Return an environment value, honoring the current camera mode prefix."""
     mode = os.environ.get("MONITOR_CAMERA_MODE", "").strip().upper()
     if mode:
         override_key = f"{mode}_{name}"
@@ -105,10 +95,6 @@ def _parse_camera_source(raw_value: str) -> int | str:
     except ValueError:
         return raw_value
 
-# ---------------------------------------------------------------------------
-# Paths and global state
-# ---------------------------------------------------------------------------
-
 BASE_DIR = Path(__file__).resolve().parent
 SUSPICIOUS_DIR = BASE_DIR / "suspicious_alerts"
 SUSPICIOUS_DIR.mkdir(parents=True, exist_ok=True)
@@ -130,15 +116,10 @@ def _install_signal_handlers() -> None:
         try:
             signal.signal(sig, _handler)
         except Exception:
-            pass  # Windows only delivers SIGINT; ignore unsupported ones.
+            pass  
 
 _install_signal_handlers()
 
-# ---------------------------------------------------------------------------
-# Configuration (combining both systems)
-# ---------------------------------------------------------------------------
-
-# Camera configuration
 CAMERA_MODE = os.environ.get("MONITOR_CAMERA_MODE", "external").strip().lower() or "external"
 CAMERA_SOURCE = _parse_camera_source(_profiled_env("MONITOR_CAMERA_SOURCE", "0"))
 CAMERA_BACKEND = (_profiled_env("MONITOR_CAMERA_BACKEND", "auto") or "auto").strip().lower()
@@ -150,25 +131,17 @@ CAMERA_READ_LATEST = _env_bool_profiled("CAMERA_READ_LATEST", True)
 CAMERA_BUFFER_FLUSH = _env_int_profiled("CAMERA_BUFFER_FLUSH", 0)
 MONITOR_CAMERA_FPS = _env_float_profiled("MONITOR_CAMERA_FPS", 20.0)
 
-# RTSP-specific tuning
-# Transport protocol: "tcp" is strongly recommended for Hikvision (avoids UDP packet loss)
 RTSP_TRANSPORT = os.environ.get("MONITOR_RTSP_TRANSPORT", "tcp").strip().lower()
-# Max time (seconds) allowed to open the RTSP stream before giving up
-RTSP_OPEN_TIMEOUT_MS = _env_int("RTSP_OPEN_TIMEOUT_MS", 10_000)   # 10 s
-# Max time (seconds) to wait for the next frame before declaring stream dead
-RTSP_READ_TIMEOUT_MS = _env_int("RTSP_READ_TIMEOUT_MS", 8_000)    # 8 s
-# How long to wait before retrying a failed RTSP connection
+RTSP_OPEN_TIMEOUT_MS = _env_int("RTSP_OPEN_TIMEOUT_MS", 10_000)   
+RTSP_READ_TIMEOUT_MS = _env_int("RTSP_READ_TIMEOUT_MS", 8_000)    
 RTSP_RECONNECT_DELAY_SEC = _env_float("RTSP_RECONNECT_DELAY_SEC", 3.0)
-# Maximum consecutive reconnect attempts (0 = unlimited)
 RTSP_MAX_RECONNECTS = _env_int("RTSP_MAX_RECONNECTS", 0)
 
-# Processing configuration
 PROCESS_WIDTH = max(64, _env_int_profiled("MONITOR_FRAME_WIDTH", 1280))
 PROCESS_HEIGHT = max(64, _env_int_profiled("MONITOR_FRAME_HEIGHT", 720))
 FORCE_PROCESS_RESIZE = _env_bool_profiled("FORCE_PROCESS_RESIZE", False)
 ENABLE_CLAHE = _env_bool_profiled("ENABLE_CLAHE", False)
 
-# Streaming configuration (from original monitor.py)
 STREAM_WIDTH = _env_int("STREAM_WIDTH", 960)
 STREAM_HEIGHT = _env_int("STREAM_HEIGHT", 540)
 STREAM_JPEG_QUALITY = min(100, max(20, _env_int("STREAM_JPEG_QUALITY", 75)))
@@ -176,22 +149,20 @@ STREAM_JPEG_OPTIMIZE = _env_bool("STREAM_JPEG_OPTIMIZE", True)
 STREAM_JPEG_PROGRESSIVE = _env_bool("STREAM_JPEG_PROGRESSIVE", True)
 STREAM_TARGET_FPS = max(1.0, _env_float("STREAM_TARGET_FPS", 15.0))
 
-# YOLO configuration
 YOLO_IMAGE_SIZE = max(320, _env_int("YOLO_IMAGE_SIZE", 960))
 YOLO_PROCESS_EVERY = max(1, _env_int("YOLO_PROCESS_EVERY", 2))
 YOLO_MAX_DETECTIONS = max(10, _env_int("YOLO_MAX_DETECTIONS", 80))
 USE_ONNX_RUNTIME_DML = os.environ.get("USE_ONNX_RUNTIME_DML", "0").strip().lower() in {"1", "true", "yes", "on"}
 YOLO_DEVICE_PREF = os.environ.get("YOLO_DEVICE", "cpu")
-YOLO_MODEL_PATH = os.environ.get("YOLO_WORLD_MODEL", "yolov8m-worldv2.pt")
+YOLO_MODEL_PATH = os.environ.get("YOLO_MODEL", "best_m_v2.pt")
 if not os.path.isabs(YOLO_MODEL_PATH):
     YOLO_MODEL_PATH = str(BASE_DIR / YOLO_MODEL_PATH)
 
 YOLO_CLASSES = [cls.strip() for cls in os.environ.get(
-    "YOLO_WORLD_CLASSES",
+    "YOLO_CLASSES",
     "head, face, person, mobile phone, laptop, tablet, paper, wrist watch, exam paper, answer sheet, question paper",
 ).split(",") if cls.strip()]
 
-# Extended YOLO classes from exam_monitor.py
 EXTENDED_YOLO_CLASSES = [
     # People / body parts for top-view tracking and crop extraction
     "head", "face", "person",
@@ -207,16 +178,14 @@ EXTENDED_YOLO_CLASSES = [
     "paper", "sheet of paper", "notebook", "cheat sheet", "document", "textbook", "printed paper", "book",
 ]
 
-# Detection thresholds (aligned with exam_monitor.py)
-GENERAL_DISPLAY_CONF = _env_float("GENERAL_DISPLAY_CONF", 0.25)  # Changed from 0.12 to 0.25
-PHONE_MIN_CONF = _env_float("PHONE_MIN_CONF", 0.45)  # Lowered from 0.60 to 0.45
-PHONE_CLASS_MIN_CONF = _env_float("PHONE_CLASS_MIN_CONF", max(0.35, PHONE_MIN_CONF))
+GENERAL_DISPLAY_CONF = _env_float("GENERAL_DISPLAY_CONF", 0.25)  
+PHONE_MIN_CONF = _env_float("PHONE_MIN_CONF", 0.30)  
+PHONE_CLASS_MIN_CONF = _env_float("PHONE_CLASS_MIN_CONF", max(0.40, PHONE_MIN_CONF))
 WATCH_CLASS_MIN_CONF = _env_float("WATCH_CLASS_MIN_CONF", 0.20)
-PAPER_CLASS_MIN_CONF = _env_float("PAPER_CLASS_MIN_CONF", max(0.20, GENERAL_DISPLAY_CONF))
-MODEL_INFER_CONF = _env_float("MODEL_INFER_CONF", max(0.25, GENERAL_DISPLAY_CONF))  # Changed from 0.08 to 0.25
-OBJECT_DRAW_MIN_CONF = _env_float("OBJECT_DRAW_MIN_CONF", max(0.25, MODEL_INFER_CONF))  # Changed from 0.10 to 0.25
+PAPER_CLASS_MIN_CONF = _env_float("PAPER_CLASS_MIN_CONF", max(0.30, GENERAL_DISPLAY_CONF))
+MODEL_INFER_CONF = _env_float("MODEL_INFER_CONF", max(0.25, GENERAL_DISPLAY_CONF))  
+OBJECT_DRAW_MIN_CONF = _env_float("OBJECT_DRAW_MIN_CONF", max(0.25, MODEL_INFER_CONF))  
 
-# MediaPipe configuration (aligned with exam_monitor.py)
 MEDIAPIPE_PROCESS_EVERY = _env_int_profiled("MEDIAPIPE_PROCESS_EVERY", 4)
 MEDIAPIPE_CROP_SIZE = max(128, _env_int_profiled("MEDIAPIPE_CROP_SIZE", 256))
 MEDIAPIPE_MAX_CROPS_PER_FRAME = max(1, _env_int_profiled("MEDIAPIPE_MAX_CROPS_PER_FRAME", 8))
@@ -227,20 +196,12 @@ MEDIAPIPE_PERSON_MIN_CONF = _env_float_profiled("MEDIAPIPE_PERSON_MIN_CONF", 0.2
 MEDIAPIPE_FACE_DET_MIN_CONF = _env_float_profiled("MEDIAPIPE_FACE_DET_MIN_CONF", 0.20)
 MEDIAPIPE_FACE_TRACK_MIN_CONF = _env_float_profiled("MEDIAPIPE_FACE_TRACK_MIN_CONF", 0.20)
 
-# Alert configuration
 ALERT_CONFIRM_FRAMES = max(1, _env_int("ALERT_CONFIRM_FRAMES", 3))
 OVERLAY_PERSISTENCE_SEC = max(0.0, _env_float("OVERLAY_PERSISTENCE_SEC", 1.5))
-
-# Per-type alert cooldowns (seconds). Each type can only fire ONCE per window.
-# These are reduced to allow for easier testing while still preventing massive flooding.
-ALERT_COOLDOWN_SEC        = _env_float("ALERT_COOLDOWN_SEC", 10.0)    # default / phone
-PAPER_ALERT_COOLDOWN_SEC  = _env_float("PAPER_ALERT_COOLDOWN_SEC", 15.0)   # paper passing
-WATCH_ALERT_COOLDOWN_SEC  = _env_float("WATCH_ALERT_COOLDOWN_SEC", 10.0)   # watch
-HEAD_ALERT_COOLDOWN_SEC   = _env_float("HEAD_ALERT_COOLDOWN_SEC", 10.0)    # head turns
-
-# ---------------------------------------------------------------------------
-# Detection classes
-# ---------------------------------------------------------------------------
+ALERT_COOLDOWN_SEC        = _env_float("ALERT_COOLDOWN_SEC", 5.0)    
+PAPER_ALERT_COOLDOWN_SEC  = _env_float("PAPER_ALERT_COOLDOWN_SEC", 5.0)   
+WATCH_ALERT_COOLDOWN_SEC  = _env_float("WATCH_ALERT_COOLDOWN_SEC", 5.0)   
+HEAD_ALERT_COOLDOWN_SEC   = _env_float("HEAD_ALERT_COOLDOWN_SEC", 5.0)    
 
 @dataclass
 class DetectionRule:
@@ -270,13 +231,9 @@ DETECTION_RULES: Dict[str, DetectionRule] = {
         min_conf=max(GENERAL_DISPLAY_CONF, PAPER_CLASS_MIN_CONF),
         min_area_fraction=0.00004,
         max_area_fraction=0.30,
-        cooldown=PAPER_ALERT_COOLDOWN_SEC,    # 45 s — laptop false-positive guard
+        cooldown=PAPER_ALERT_COOLDOWN_SEC,    
     ),
 }
-
-# ---------------------------------------------------------------------------
-# Utility functions
-# ---------------------------------------------------------------------------
 
 def log(message: str) -> None:
     print(f"[Monitor] {message}", flush=True)
@@ -356,14 +313,13 @@ def emit_alert(reason: str, bbox: Tuple[float, float, float, float],
     print(payload, flush=True)
 
 FRIENDLY_LABELS = {
-    # Reason-based labels (matching frontend ExamMonitoring.js)
     "PHONE_DETECTED": "Phone Detected",
     "WATCH_DETECTED": "Watch Detected",
     "PAPER_PASSING": "Paper Passing",
     "HEAD_LEFT": "Head Looking Left",
     "HEAD_RIGHT": "Head Looking Right",
     "HEAD_DOWN": "Head Down",
-    # Raw YOLO class names → unified category labels
+    "HAND_GESTURE": "Hand Gesture",
     "mobile phone": "Phone Detected",
     "cell phone": "Phone Detected",
     "cellphone": "Phone Detected",
@@ -396,16 +352,13 @@ FRIENDLY_LABELS = {
 
 def _get_friendly_label(reason: str, raw_label: Optional[str] = None) -> str:
     """Return a clean display label matching the frontend UI."""
-    # First try the reason (e.g. PHONE_DETECTED)
     friendly = FRIENDLY_LABELS.get(reason)
     if friendly:
         return friendly
-    # Then try the raw YOLO class label (e.g. "smartphone")
     if raw_label:
         friendly = FRIENDLY_LABELS.get(raw_label.lower().strip())
         if friendly:
             return friendly
-    # Fallback: title-case the reason
     return reason.replace("_", " ").title()
 
 def save_evidence(
@@ -425,7 +378,6 @@ def save_evidence(
         annotated = frame.copy()
         frame_h, frame_w = annotated.shape[:2]
 
-        # Get the clean, friendly label for display
         display_label = _get_friendly_label(reason, label)
 
         if bbox is not None and len(bbox) >= 4:
@@ -454,15 +406,11 @@ def save_evidence(
         log(f"Failed to write evidence frame: {exc}")
         return None
 
-# ---------------------------------------------------------------------------
-# Violation Tracker (from exam_monitor.py)
-# ---------------------------------------------------------------------------
 
 class ViolationTracker:
     def __init__(self, cooldown: float = 30.0,
                  per_type_cooldowns: dict = None):
         self.cooldown = cooldown
-        # Per-type overrides; falls back to self.cooldown if type not listed
         self._per_type = per_type_cooldowns or {}
         self.counts = {
             "paper_swap": 0,
@@ -470,6 +418,7 @@ class ViolationTracker:
             "watch": 0,
             "head_turn": 0,
             "head_down": 0,
+            "hand_gesture": 0,
         }
         self._last_alert = {}
 
@@ -485,10 +434,6 @@ class ViolationTracker:
             return True
         return False
 
-# ---------------------------------------------------------------------------
-# MediaPipe Face Movement Detector (from exam_monitor.py)
-# ---------------------------------------------------------------------------
-
 @dataclass
 class NormalizedPoint:
     x: float
@@ -498,13 +443,11 @@ class NormalizedPoint:
 
 class FaceMovementDetector:
     def __init__(self):
-        # Detection thresholds
-        self.YAW_THRESHOLD = 70  # degrees - head turn left/right
-        self.PITCH_DOWN_THRESH = -10  # degrees - head looking down
-        self.ALERT_THRESHOLD = 30  # Risk score threshold
-        self.ALERT_COOLDOWN = 2.0  # seconds between alerts
+        self.YAW_THRESHOLD = 70  
+        self.PITCH_DOWN_THRESH = -10  
+        self.ALERT_THRESHOLD = 30  
+        self.ALERT_COOLDOWN = 2.0  
         
-        # Risk weights
         self.RISK_WEIGHTS = {
             "head_turn": 50,
             "head_down": 50,
@@ -651,14 +594,12 @@ class FaceMovementDetector:
                 pw = max(1, x2 - x1)
                 ph = max(1, y2 - y1)
                 candidates = [
-                    # Tight upper-center head crop (best for seated frontal/angled faces)
                     (
                         x1 + int(0.12 * pw),
                         y1,
                         x2 - int(0.12 * pw),
                         y1 + int(0.38 * ph),
                     ),
-                    # Wider fallback upper crop
                     (
                         x1 + int(0.05 * pw),
                         y1,
@@ -688,11 +629,9 @@ class FaceMovementDetector:
         return selected_heads
     
     def detect(self, frame_bgr, yolo_detections: Sequence[Dict[str, object]], frame_idx: int):
-        """Run MediaPipe only on YOLO crops for robust far-angle analysis."""
         if self.face_mesh is None:
             return [], []
 
-        # Cache output between MediaPipe passes to preserve overlays/alerts.
         if frame_idx % MEDIAPIPE_PROCESS_EVERY != 0:
             return self._last_violations, self._last_overlay_data
         
@@ -722,9 +661,7 @@ class FaceMovementDetector:
                 face_results = self.face_mesh.process(rgb_crop)
                 if not face_results.multi_face_landmarks:
                     continue
-                # Use first face from this head crop (crop should contain one student head).
                 face_lms = self._map_landmarks_to_global(face_results.multi_face_landmarks[0].landmark, bbox, w, h)
-                # Use spatially-stable ID instead of target index to preserve gesture history across frames.
                 cx = int(((bbox[0] + bbox[2]) * 0.5) / 120)
                 cy = int(((bbox[1] + bbox[3]) * 0.5) / 120)
                 student_id = f"student_{cx}_{cy}"
@@ -810,24 +747,20 @@ class FaceMovementDetector:
         pitch = data["pitch"]
         flags = data["flags"]
         
-        # Color based on detection status
         color = (0, 0, 255) if (abs(yaw) > self.YAW_THRESHOLD or pitch < self.PITCH_DOWN_THRESH) else (0, 255, 255)
         
-        # Key landmark dots
         key_pts = [1, 33, 263, 152, 10, 61, 291, 4]
         for i in key_pts:
             p = face_lms[i]
             px, py = int(p.x * w), int(p.y * h)
             cv2.circle(frame, (px, py), 3, color, -1)
         
-        # Gaze direction arrow from nose
         nose = face_lms[1]
         nx, ny = int(nose.x * w), int(nose.y * h)
         dx = int(np.sin(np.radians(yaw)) * 60)
         dy = int(-np.sin(np.radians(pitch)) * 60)
         cv2.arrowedLine(frame, (nx, ny), (nx + dx, ny + dy), color, 2, tipLength=0.3)
         
-        # Face bounding box
         xs = [lm.x for lm in face_lms]
         ys = [lm.y for lm in face_lms]
         x1 = max(0, int(min(xs)*w) - 14)
@@ -835,10 +768,8 @@ class FaceMovementDetector:
         x2 = min(w, int(max(xs)*w) + 14)
         y2 = min(h, int(max(ys)*h) + 14)
         
-        # Draw dashed rectangle
         self._draw_dashed_rect(frame, x1, y1, x2, y2, color, 1)
         
-        # Draw student ID and status
         status_text = f"{student_id.upper()}"
         if flags.get("head_turn"):
             status_text += " TURN"
@@ -848,7 +779,6 @@ class FaceMovementDetector:
         cv2.putText(frame, status_text, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
     
     def _draw_dashed_rect(self, img, x1, y1, x2, y2, color, thickness, gap=10):
-        """Draw dashed rectangle."""
         for side in [(x1,y1,x2,y1),(x2,y1,x2,y2),(x2,y2,x1,y2),(x1,y2,x1,y1)]:
             ax,ay,bx,by = side
             length = int(np.hypot(bx-ax, by-ay))
@@ -860,11 +790,9 @@ class FaceMovementDetector:
                          (int(ax+t2*(bx-ax)), int(ay+t2*(by-ay))),
                          color, thickness)
 
-# ---------------------------------------------------------------------------
-# YOLO-World Detector (enhanced from both systems)
-# ---------------------------------------------------------------------------
+# YOLO Detector
 
-class YOLOWorldDetector:
+class YOLODetector:
     HEAD_CLASSES = {"head", "face", "human head", "human face"}
     PERSON_CLASSES = {"person", "human", "student"}
     LAPTOP_CLASSES = {"laptop", "notebook computer", "notebook", "tablet", "ipad"}
@@ -897,7 +825,7 @@ class YOLOWorldDetector:
         self.prompts = [p.strip() for p in prompts if p.strip()]
         self.device = YOLO_DEVICE_PREF or "cpu"
         
-        log(f"Loading YOLO-World model: {self.model_path} (device={self.device})")
+        log(f"Loading YOLO model: {self.model_path} (device={self.device})")
         self.model = YOLO(self.model_path)
         if hasattr(self.model, "set_classes"):
             self.model.set_classes(self.prompts)
@@ -956,9 +884,7 @@ class YOLOWorldDetector:
                 "bbox": coords,
             })
             
-        # Cross-class NMS: Prevent double alerts for the same physical object
         filtered_detections = []
-        # Class-aware NMS: only suppress duplicates within the same semantic category.
         detections.sort(key=lambda x: x['conf'] + (0.05 if x['category'] == 'mobile' else 0), reverse=True)
 
         for det in detections:
@@ -989,29 +915,12 @@ class YOLOWorldDetector:
 
         return filtered_detections
 
-# ---------------------------------------------------------------------------
-# Camera management — RTSPCapture (threaded, always-fresh-frame, auto-reconnect)
-# ---------------------------------------------------------------------------
+# Camera management
 
 def _build_rtsp_cap(source) -> Optional[cv2.VideoCapture]:
-    """
-    Open an RTSP stream with low-latency FFmpeg options injected via the
-    environment variable trick supported by OpenCV's FFMPEG backend.
-
-    Key settings applied:
-      • CAP_PROP_BUFFERSIZE = 1       → keep only 1 frame in the OS decode buffer
-      • rtsp_transport=tcp            → reliable byte-stream (avoids UDP drops)
-      • fflags=nobuffer               → disable FFmpeg's own read buffer
-      • flags=low_delay               → request low-latency decoding path
-      • analyzeduration / probesize   → drastically cut stream-open latency
-      • stimeout                      → socket timeout so a dead stream doesn't
-                                         hang forever
-    """
     is_rtsp = isinstance(source, str) and source.lower().startswith("rtsp")
 
     if is_rtsp:
-        # Inject FFmpeg options via the OpenCV environment variable.
-        # Syntax inside OpenCV for this var is strict: "key;value|key;value"
         ffmpeg_opts = "|".join([
             f"rtsp_transport;{RTSP_TRANSPORT}",
             "fflags;nobuffer",
@@ -1021,10 +930,8 @@ def _build_rtsp_cap(source) -> Optional[cv2.VideoCapture]:
         ])
         os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = ffmpeg_opts
         cap = cv2.VideoCapture(source, cv2.CAP_FFMPEG)
-        # Remove env var so it doesn't bleed into other captures
         os.environ.pop("OPENCV_FFMPEG_CAPTURE_OPTIONS", None)
     else:
-        # Local webcam — use the fastest available backend
         backend_map = {
             "ffmpeg": cv2.CAP_FFMPEG,
             "gstreamer": cv2.CAP_GSTREAMER,
@@ -1039,33 +946,13 @@ def _build_rtsp_cap(source) -> Optional[cv2.VideoCapture]:
     if not cap.isOpened():
         return None
 
-    # For RTSP keep the internal decode buffer at 1 frame so cap.read() always
-    # returns the newest frame, not a stale buffered one.
     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
     cap.set(cv2.CAP_PROP_FPS, MONITOR_CAMERA_FPS)
     return cap
 
 
 class RTSPCapture:
-    """
-    Background-threaded camera reader that eliminates RTSP lag.
 
-    Problem with naive cap.read():
-        OpenCV buffers several decoded frames internally.  When your processing
-        loop is slower than the camera FPS those frames queue up, so cap.read()
-        gives you a frame that is several seconds old — causing the appearance of
-        a frozen or very laggy stream.
-
-    Solution:
-        A dedicated daemon thread calls cap.read() in a tight loop and stores
-        only the *latest* frame in a deque(maxlen=1).  The main thread pops
-        that single slot; old frames are automatically discarded.
-
-    Reconnection:
-        If the thread detects that cap.read() has failed (network hiccup,
-        camera reboot, etc.) it waits RTSP_RECONNECT_DELAY_SEC and tries to
-        re-open the stream automatically.
-    """
 
     def __init__(self, source):
         self.source = source
@@ -1076,7 +963,6 @@ class RTSPCapture:
         self._reconnect_count = 0
         self._thread = threading.Thread(target=self._reader, daemon=True, name="RTSPReader")
         self._thread.start()
-        # Wait up to RTSP_OPEN_TIMEOUT_MS ms for the first successful frame
         timeout = RTSP_OPEN_TIMEOUT_MS / 1000.0
         if not self._connected.wait(timeout=timeout):
             log("WARNING: RTSP stream did not produce a frame within the open timeout — "
@@ -1090,7 +976,6 @@ class RTSPCapture:
         cap: Optional[cv2.VideoCapture] = None
 
         while not self._stop.is_set():
-            # ── Open / re-open ────────────────────────────────────────
             if cap is None or not cap.isOpened():
                 if cap is not None:
                     cap.release()
@@ -1107,7 +992,6 @@ class RTSPCapture:
                 log("RTSPCapture: stream connected successfully.")
                 self._reconnect_count = 0
 
-            # ── Continuous read ───────────────────────────────────────
             ret, frame = cap.read()
             if not ret or frame is None:
                 log("RTSPCapture: read() failed — stream may have dropped. Reconnecting...")
@@ -1116,20 +1000,14 @@ class RTSPCapture:
                 self._stop.wait(timeout=RTSP_RECONNECT_DELAY_SEC)
                 continue
 
-            # Store ONLY the freshest frame; discard any queued old frame
             self._buf.append(frame)
-            self._connected.set()   # Signal that we have at least one good frame
+            self._connected.set()
 
         if cap is not None:
             cap.release()
         log("RTSPCapture reader thread exited.")
 
-    # ------------------------------------------------------------------
-    # Public API  (drop-in replacement for cap.read())
-    # ------------------------------------------------------------------
-
     def read(self) -> Tuple[bool, Optional[np.ndarray]]:
-        """Return (True, frame) if a fresh frame is available, else (False, None)."""
         try:
             return True, self._buf.pop()
         except IndexError:
@@ -1144,22 +1022,14 @@ class RTSPCapture:
 
 
 def open_capture() -> Optional[RTSPCapture]:
-    """
-    Return an RTSPCapture for RTSP sources, or a thin RTSPCapture wrapper
-    around a local webcam.  Returns None only if the source string is invalid.
-    """
     log(f"Opening camera source: {CAMERA_SOURCE}")
     capture = RTSPCapture(CAMERA_SOURCE)
     return capture
 
-# ---------------------------------------------------------------------------
-# Main monitoring loop
-# ---------------------------------------------------------------------------
 
 def main():
     log("Starting integrated exam monitoring system...")
     
-    # Initialize violation tracker with per-type cooldowns
     tracker = ViolationTracker(
         cooldown=ALERT_COOLDOWN_SEC,
         per_type_cooldowns={
@@ -1169,37 +1039,32 @@ def main():
             "paper_swap": PAPER_ALERT_COOLDOWN_SEC,  # 45 s
             "head_turn":  HEAD_ALERT_COOLDOWN_SEC,   # 20 s
             "head_down":  HEAD_ALERT_COOLDOWN_SEC,   # 20 s
+            "hand_gesture": HEAD_ALERT_COOLDOWN_SEC, # 20 s
+            "paper_passing": PAPER_ALERT_COOLDOWN_SEC, # 15 s
         }
     )
     
-    # Initialize YOLO detector
-    yolo = YOLOWorldDetector(YOLO_MODEL_PATH, YOLO_CLASSES + EXTENDED_YOLO_CLASSES)
+    yolo = YOLODetector(YOLO_MODEL_PATH, YOLO_CLASSES + EXTENDED_YOLO_CLASSES)
     
-    # Initialize MediaPipe face detector
     face_detector = FaceMovementDetector()
     
-    # Open camera
+    hand_detector = HandGestureDetector(process_every=6)
+    
     cap = open_capture()
     if cap is None:
         log("Failed to open camera")
         return
 
-    # For RTSP sources wait briefly so the reader thread can fill the buffer;
-    # this avoids a burst of "no frame yet" log spam at startup.
     log("Waiting for first camera frame...")
     time.sleep(POST_CAMERA_INIT_DELAY_SEC)
 
-    # Main loop variables
     frame_idx = 0
     last_detections: List[Dict] = []
     last_face_violations: List[Dict] = []
     last_face_overlay_data: List[Dict] = []
 
-    # Carry the last good frame so we can keep drawing / emitting even when
-    # the RTSP reader thread is mid-reconnect and briefly has no new frames.
     last_good_frame: Optional[np.ndarray] = None
 
-    # YOLO async threading variables
     yolo_lock = threading.Lock()
     yolo_payload: Optional[np.ndarray] = None
     yolo_running = True
@@ -1226,35 +1091,28 @@ def main():
     frame_throttle_state: Dict[str, float] = {}
     fps = 0.0
     prev_time = time.time()
-    # Track consecutive empty reads to avoid tight-spinning when stream drops
     _empty_streak = 0
-    _MAX_EMPTY_STREAK_SLEEP = 0.03  # sleep 30 ms after N consecutive misses
+    _MAX_EMPTY_STREAK_SLEEP = 0.03  
     _EMPTY_STREAK_THRESH = 5
 
     try:
         while not stop_event.is_set():
             ret, frame = cap.read()
 
-            # ── No fresh frame yet (reader thread reconnecting or behind) ──
             if not ret or frame is None:
                 _empty_streak += 1
                 if _empty_streak >= _EMPTY_STREAK_THRESH:
-                    # Avoid busy-spinning while waiting for reconnect
                     time.sleep(_MAX_EMPTY_STREAK_SLEEP)
                 if last_good_frame is not None:
-                    # Keep emitting the last good frame so the frontend
-                    # doesn't go blank during brief network hiccups.
                     emit_frame(last_good_frame, frame_throttle_state)
                 continue
 
             _empty_streak = 0
             last_good_frame = frame
             
-            # Resize for processing if needed
             if FORCE_PROCESS_RESIZE:
                 frame = cv2.resize(frame, (PROCESS_WIDTH, PROCESS_HEIGHT))
             
-            # Apply CLAHE if enabled
             if ENABLE_CLAHE:
                 frame = apply_clahe(frame)
             
@@ -1267,13 +1125,11 @@ def main():
             
             frame_idx += 1
             
-            # YOLO detection (asynchronous trigger)
             if frame_idx % YOLO_PROCESS_EVERY == 0:
                 with yolo_lock:
                     if yolo_payload is None:
                         yolo_payload = frame.copy()
             
-            # MediaPipe refinement is crop-based and internally throttled.
             face_violations, face_overlay_data = face_detector.detect(
                 frame,
                 last_detections,
@@ -1282,39 +1138,18 @@ def main():
             last_face_violations = face_violations
             last_face_overlay_data = face_overlay_data
             
+            # Hand Gesture Detection
+            hand_violations, hand_overlay_data = hand_detector.detect(frame, frame_idx, last_detections)
+            
             # Process YOLO detections for alerts
             for detection in last_detections:
                 category = detection["category"]
-                if category == "laptop":
-                    continue
+                if category == "laptop" or category == "paper":
+                    continue  # Paper passing is handled by handgesture.py
                 if category in DETECTION_RULES:
                     rule = DETECTION_RULES[category]
                     conf = detection["conf"]
                     bbox = detection["bbox"]
-                    
-                    # Logic for Paper Passing: only alert if the paper is physically passed away from personal space
-                    if category == "paper" and last_face_overlay_data:
-                        paper_cx = (bbox[0] + bbox[2]) / 2.0
-                        frame_w = frame.shape[1]
-                        
-                        is_passing = True
-                        faces_lms = [d["landmarks"] for d in last_face_overlay_data if d["type"] == "face"]
-                        
-                        for face_lm in faces_lms:
-                            xs = [lm.x * frame_w for lm in face_lm]
-                            face_x = np.mean(xs)
-                            face_w_px = max(xs) - min(xs)
-                            
-                            # Personal space radius: enough to cover writing bounds in front of the individual
-                            personal_space_radius = max(face_w_px * 2.5, frame_w * 0.15)
-                            
-                            # If paper is inside someone's personal horizontal bounds, it's their own paper.
-                            if abs(paper_cx - face_x) < personal_space_radius:
-                                is_passing = False
-                                break
-                                
-                        if not is_passing:
-                            continue # Ignore, they are just using their own paper
                     
                     if conf >= rule.min_conf:
                         if tracker.record(category):
@@ -1342,12 +1177,29 @@ def main():
                 if tracker.record(violation_type):
                     timestamp = datetime.now()
                     h, w = frame.shape[:2]
-                    # Use the real face bounding box from MediaPipe if available
                     bbox = violation.get("face_bbox", (w//4, h//4, 3*w//4, 3*h//4))
                     snapshot_path = save_evidence(frame, alert_reason, timestamp, bbox)
                     emit_alert(alert_reason, bbox, violation["confidence"], 
                              (w, h), snapshot_path, timestamp)
                     _beep("generic")
+            
+            # Process Hand Gesture & Paper Passing Violations
+            for violation in hand_violations:
+                v_type = violation["type"]
+                if v_type == "hand_gesture":
+                    alert_reason = "HAND_GESTURE"
+                elif v_type == "paper_passing":
+                    alert_reason = "PAPER_PASSING"
+                else:
+                    continue
+
+                if tracker.record(v_type):
+                    timestamp = datetime.now()
+                    bbox = violation.get("face_bbox", (0, 0, frame.shape[1], frame.shape[0]))
+                    snapshot_path = save_evidence(frame, alert_reason, timestamp, bbox)
+                    emit_alert(alert_reason, bbox, violation["confidence"], 
+                             (frame.shape[1], frame.shape[0]), snapshot_path, timestamp)
+                    _beep("paper" if v_type == "paper_passing" else "generic")
             
             # Draw YOLO detections for objects only (phones, watches, papers)
             for detection in last_detections:
@@ -1355,7 +1207,7 @@ def main():
                 conf = detection["conf"]
                 category = detection["category"]
 
-                # Ignore laptop completely (no overlay and no alerting path).
+                # Ignore laptop completely.
                 if category == "laptop":
                     continue
                 
@@ -1384,13 +1236,9 @@ def main():
                 cv2.rectangle(frame, (x1, y1 - text_h - 8), (x1 + text_w + 8, y1), color, -1)
                 cv2.putText(frame, label_text, (x1 + 4, y1 - 4), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2, cv2.LINE_AA)
             
-            # MediaPipe overlays enabled - showing face detection without bounding boxes
             face_detector.draw_overlay(frame, face_overlay_data)
+            hand_detector.draw_overlay(frame, hand_overlay_data)
             
-            # Draw FPS (disabled for cleaner frontend feed)
-            # cv2.putText(frame, f"FPS: {fps:.1f}", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2, cv2.LINE_AA)
-            
-            # Emit frame
             emit_frame(frame, frame_throttle_state)
             
     except KeyboardInterrupt:

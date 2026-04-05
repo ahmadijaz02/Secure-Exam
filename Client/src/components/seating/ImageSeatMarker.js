@@ -16,7 +16,7 @@ function ImageSeatMarker({ planId, plan, onSeatsMarked, onNext }) {
   const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(null);
   const [, forceUpdate] = useState(0); // Force re-render for SVG positioning
-  
+
   // Drag-to-draw state
   const [isDrawing, setIsDrawing] = useState(false);
   const [drawingStart, setDrawingStart] = useState(null);
@@ -29,31 +29,29 @@ function ImageSeatMarker({ planId, plan, onSeatsMarked, onNext }) {
   // Load existing plan data if editing
   useEffect(() => {
     if (plan && plan.image_path && step === 1) {
-      // Editing mode: load existing image and seats (only on initial mount)
       const getFullImageUrl = (imagePath) => {
         if (!imagePath) return '';
         if (imagePath.startsWith('http')) return imagePath;
-        // Keep /api in the path for uploads route
         const base = API_CONFIG.BASE_URL.replace(/\/$/, '');
         return `${base}${imagePath.startsWith('/') ? '' : '/'}${imagePath}`;
       };
-      
+
       const imageUrl = getFullImageUrl(plan.image_path);
       console.log('Loading image from:', imageUrl); // Debug log
       setImagePreview(imageUrl);
       setImageLoaded(false); // Reset loading state
       setImageError(null); // Reset error state
-      
+
       // Load existing seats if they have coordinates
       if (plan.seats && plan.seats.length > 0) {
-        const seatsWithCoords = plan.seats.filter(s => 
+        const seatsWithCoords = plan.seats.filter(s =>
           s.norm_x !== undefined && s.norm_y !== undefined
         );
         if (seatsWithCoords.length > 0) {
           setMarkedSeats(seatsWithCoords);
         }
       }
-      
+
       setStep(2); // Skip upload step, go directly to marking
     }
   }, [plan, step]); // Added step to dependency array
@@ -115,7 +113,7 @@ function ImageSeatMarker({ planId, plan, onSeatsMarked, onNext }) {
     e.preventDefault();
     const coords = getNormCoords(e);
     if (!coords) return;
-    
+
     setIsDrawing(true);
     setDrawingStart(coords);
     setDrawingCurrent(coords);
@@ -190,7 +188,7 @@ function ImageSeatMarker({ planId, plan, onSeatsMarked, onNext }) {
 
     setMarkedSeats([...markedSeats, newSeat]);
     addNotification('success', `Seat ${seatNumber} marked ✓`);
-    
+
     setDrawingStart(null);
     setDrawingCurrent(null);
   };
@@ -316,7 +314,7 @@ function ImageSeatMarker({ planId, plan, onSeatsMarked, onNext }) {
         <div className="glass-card-static rounded-2xl p-4 sm:p-6 space-y-4">
           <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-2">Step 2: Mark Seat Regions</h2>
           <p className="text-gray-600 dark:text-gray-400 mb-4">
-            <strong>Click and drag</strong> on the image below to draw a bounding box around each seat or desk area. 
+            <strong>Click and drag</strong> on the image below to draw a bounding box around each seat or desk area.
             (If you just click, a default-sized box will be created).
           </p>
 
@@ -364,8 +362,8 @@ function ImageSeatMarker({ planId, plan, onSeatsMarked, onNext }) {
 
             {/* SVG Markers & Drawing Overlay */}
             {imageLoaded && (
-              <svg 
-                className="absolute top-0 left-0 w-full h-full cursor-crosshair" 
+              <svg
+                className="absolute top-0 left-0 w-full h-full cursor-crosshair"
                 style={{ touchAction: 'none' }}
                 onMouseDown={handleMouseDown}
                 onMouseMove={handleMouseMove}
@@ -376,20 +374,20 @@ function ImageSeatMarker({ planId, plan, onSeatsMarked, onNext }) {
                 {markedSeats.map((seat, index) => {
                   const imgEl = imageCanvasRef.current;
                   if (!imgEl) return null;
-                  
+
                   const imgRect = imgEl.getBoundingClientRect();
                   const containerRect = imgEl.parentElement.getBoundingClientRect();
-                  
+
                   const offsetX = imgRect.left - containerRect.left;
                   const offsetY = imgRect.top - containerRect.top;
-                  
+
                   // fallback for old points without norm_w/h
                   const w = (seat.norm_w || 0.15) * imgRect.width;
                   const h = (seat.norm_h || 0.20) * imgRect.height;
-                  
+
                   const centerX = offsetX + (seat.norm_x * imgRect.width);
                   const centerY = offsetY + (seat.norm_y * imgRect.height);
-                  
+
                   const x = centerX - (w / 2);
                   const y = centerY - (h / 2);
 
@@ -438,7 +436,7 @@ function ImageSeatMarker({ planId, plan, onSeatsMarked, onNext }) {
                       const containerRect = imageCanvasRef.current.parentElement.getBoundingClientRect();
                       const offsetX = imgRect.left - containerRect.left;
                       const offsetY = imgRect.top - containerRect.top;
-                      
+
                       const minX = Math.min(drawingStart.normX, drawingCurrent.normX);
                       const minY = Math.min(drawingStart.normY, drawingCurrent.normY);
                       let normW = Math.abs(drawingCurrent.normX - drawingStart.normX);
@@ -447,17 +445,17 @@ function ImageSeatMarker({ planId, plan, onSeatsMarked, onNext }) {
 
                       // Show the preview using default size if they are just clicking
                       if (normW < 0.02 || normH < 0.02) {
-                          drawnRect.w = 0.15;
-                          drawnRect.h = 0.20;
-                          drawnRect.x = Math.max(0, drawingStart.normX - drawnRect.w / 2);
-                          drawnRect.y = Math.max(0, drawingStart.normY - drawnRect.h / 2);
+                        drawnRect.w = 0.15;
+                        drawnRect.h = 0.20;
+                        drawnRect.x = Math.max(0, drawingStart.normX - drawnRect.w / 2);
+                        drawnRect.y = Math.max(0, drawingStart.normY - drawnRect.h / 2);
                       }
 
                       const x = offsetX + (drawnRect.x * imgRect.width);
                       const y = offsetY + (drawnRect.y * imgRect.height);
                       const w = drawnRect.w * imgRect.width;
                       const h = drawnRect.h * imgRect.height;
-                      
+
                       return (
                         <rect
                           x={x}
@@ -490,11 +488,10 @@ function ImageSeatMarker({ planId, plan, onSeatsMarked, onNext }) {
                 <div
                   key={index}
                   onClick={() => setSelectedSeatIndex(selectedSeatIndex === index ? null : index)}
-                  className={`p-2.5 rounded-xl text-center cursor-pointer font-bold transition-all ${
-                    selectedSeatIndex === index
+                  className={`p-2.5 rounded-xl text-center cursor-pointer font-bold transition-all ${selectedSeatIndex === index
                       ? 'bg-rose-500 text-white shadow-sm'
                       : 'bg-indigo-100 dark:bg-indigo-900/30 text-indigo-700 dark:text-indigo-300 hover:bg-indigo-200 dark:hover:bg-indigo-800/50'
-                  }`}
+                    }`}
                 >
                   <div>Seat {seat.seat_number}</div>
                   {selectedSeatIndex === index && (
