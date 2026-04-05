@@ -17,7 +17,6 @@ export { default as incidentService } from './services/incidentService';
 export { default as userService } from './services/userService';
 export { default as dashboardService } from './services/dashboardService';
 
-// New modular exports
 export * from './services/authService';
 export * from './services/examService';
 export * from './services/incidentService';

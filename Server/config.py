@@ -3,20 +3,15 @@ from datetime import timedelta
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Load .env from the Server directory explicitly (avoids cwd-related misses)
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(dotenv_path=BASE_DIR / '.env', override=True)
 
 class Config:
-    # Basic Flask configuration
     SECRET_KEY = os.environ.get('SECRET_KEY') or 'dev-secret-key-change-in-production'
 
-    # MongoDB configuration
-    # Supply your MongoDB Atlas SRV URI via MONGODB_URI env var (no hardcoded default)
     MONGODB_URI = os.environ.get('MONGODB_URI')
     MONGODB_DB_NAME = os.environ.get('MONGODB_DB_NAME') or 'exam_monitoring'
 
-    # JWT configuration
     JWT_SECRET_KEY = os.environ.get('JWT_SECRET_KEY') or 'jwt-secret-change-in-production'
     JWT_ACCESS_TOKEN_EXPIRES = timedelta(hours=24)
     JWT_REFRESH_TOKEN_EXPIRES = timedelta(days=30)

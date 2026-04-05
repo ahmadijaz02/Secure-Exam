@@ -10,7 +10,6 @@ const objectAlertReasons = ['PHONE_DETECTED', 'WATCH_DETECTED', 'PAPER_PASSING']
 const ALERT_ICONS = {
   PHONE_DETECTED: '📱', WATCH_DETECTED: '⌚', PAPER_PASSING: '📄',
   HEAD_LEFT: '↩️', HEAD_RIGHT: '↪️', HEAD_DOWN: '⬇️',
-  HAND_SIGNAL: '✋', HAND_MOUTH: '🤫', SIGN_LANGUAGE_CHEATING: '🤟',
 };
 
 const ExamMonitoring = () => {
@@ -149,9 +148,8 @@ const ExamMonitoring = () => {
 
   const formatAlertReason = (reason) => ({
     PHONE_DETECTED: 'Phone Detected', WATCH_DETECTED: 'Watch Detected',
-    HAND_MOUTH: 'Hand Near Mouth', SIGN_LANGUAGE_CHEATING: 'Sign Language',
     HEAD_LEFT: 'Head Turn Left', HEAD_RIGHT: 'Head Turn Right',
-    HEAD_DOWN: 'Head Down', HAND_SIGNAL: 'Hand Signal', PAPER_PASSING: 'Paper Passing',
+    HEAD_DOWN: 'Head Down', PAPER_PASSING: 'Paper Passing',
   }[reason] || reason);
 
   const filteredAlerts = useMemo(() => {
@@ -212,11 +210,17 @@ const ExamMonitoring = () => {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-gray-50 to-blue-50/30 dark:from-gray-950 dark:via-gray-900 dark:to-slate-950 p-3 sm:p-5">
-      <div className="max-w-[1680px] mx-auto space-y-4">
-
-
-
-        {/* ─── Control Bar ─── */}
+      <style>{`
+        @keyframes scanline {
+          0% { transform: translateY(-100%); }
+          100% { transform: translateY(400px); }
+        }
+        @keyframes slideright {
+          0% { left: -33%; }
+          100% { left: 100%; }
+        }
+      `}</style>
+      <div className="max-w-[1680px] mx-auto space-y-4">        {/* ─── Control Bar ─── */}
         <div className="bg-white/80 dark:bg-gray-800/60 backdrop-blur-xl rounded-2xl border border-gray-200/60 dark:border-gray-700/40 shadow-sm">
           <div className="px-4 py-3 flex flex-wrap items-center justify-between gap-3">
             {/* Left pills */}
@@ -292,15 +296,71 @@ const ExamMonitoring = () => {
                       <img ref={videoImgRef} src="" alt="Live feed" className="block w-full h-full object-contain rounded-xl" />
                     </>
                   ) : (
-                    <div className="text-center p-6">
-                      <div className="w-16 h-16 mx-auto mb-3 rounded-2xl bg-gray-800/80 flex items-center justify-center">
-                        <svg className="w-8 h-8 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" /></svg>
-                      </div>
-                      <p className="text-gray-500 text-sm font-medium">{isMonitoring ? 'Initializing camera...' : 'No active session'}</p>
-                      {isMonitoring && (
-                        <div className="mt-2 flex items-center justify-center gap-1.5 text-gray-600 text-xs">
-                          <svg className="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" /></svg>
-                          {formatDuration(bootElapsedSec)}
+                    <div className="text-center p-6 flex flex-col items-center justify-center w-full h-full relative">
+                      {!isMonitoring ? (
+                        <div className="flex flex-col items-center opacity-70">
+                          <div className="w-16 h-16 mb-4 rounded-2xl bg-gray-800/80 flex items-center justify-center border border-gray-700 shadow-inner">
+                            <svg className="w-8 h-8 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                            </svg>
+                          </div>
+                          <p className="text-gray-400 text-sm font-medium tracking-wide">No active monitoring session</p>
+                        </div>
+                      ) : (
+                        <div className="flex flex-col items-center relative z-10 w-full max-w-md">
+                          {/* High-tech Radar Animation */}
+                          <div className="relative w-32 h-32 flex items-center justify-center mb-10">
+                            {/* Outer pulsing rings */}
+                            <div className="absolute inset-0 rounded-full border-[1.5px] border-indigo-500/20 animate-ping" style={{ animationDuration: '3s' }}></div>
+                            <div className="absolute inset-2 rounded-full border border-indigo-500/30"></div>
+                            <div className="absolute -inset-4 rounded-full border border-dashed border-indigo-500/10 animate-[spin_8s_linear_infinite]"></div>
+                            
+                            {/* Inner rotating dashed ring */}
+                            <div className="absolute inset-4 rounded-full border-2 border-dashed border-indigo-400/40 animate-[spin_3s_linear_infinite]"></div>
+                            
+                            {/* Radar sweep using CSS gradient and spin */}
+                            <div className="absolute inset-0 rounded-full overflow-hidden pointer-events-none">
+                              <div className="absolute w-1/2 h-1/2 top-0 right-0 bg-gradient-to-bl from-indigo-500/40 to-transparent origin-bottom-left animate-[spin_2s_linear_infinite]"></div>
+                            </div>
+                            
+                            {/* Center Icon */}
+                            <div className="relative z-10 w-12 h-12 rounded-full bg-gray-900 border border-indigo-500/60 flex items-center justify-center shadow-[0_0_20px_rgba(99,102,241,0.4)]">
+                              <svg className="w-5 h-5 text-indigo-400 animate-pulse" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                              </svg>
+                            </div>
+                          </div>
+
+                          {/* Connection Status Text */}
+                          <div className="w-full bg-gray-900/80 backdrop-blur-sm border border-gray-800 rounded-xl p-5 shadow-2xl relative overflow-hidden">
+                            {/* Scanning bar effect across the card */}
+                            <div className="absolute inset-0 border-t border-indigo-500/50 opacity-30 blur-[1px]"
+                                 style={{ animation: 'scanline 2.5s linear infinite' }}></div>
+                                 
+                            <div className="flex flex-col items-center text-center font-mono space-y-4 z-10 relative">
+                              <h3 className="text-indigo-400 text-[13px] font-semibold tracking-[0.2em] uppercase animate-pulse">
+                                Initializing Camera Stream
+                              </h3>
+                              
+                              <div className="flex flex-col items-center justify-center gap-1">
+                                <span className="text-gray-500 text-[10px] uppercase font-bold tracking-[0.2em]">Elapsed Time</span>
+                                <span className="text-4xl text-gray-100 font-light tracking-wider leading-none">
+                                  {formatDuration(bootElapsedSec)}
+                                </span>
+                              </div>
+
+                              {/* Progress bar container */}
+                              <div className="w-full max-w-[200px] h-1.5 bg-gray-800 rounded-full overflow-hidden mt-2 relative">
+                                <div className="absolute left-0 top-0 h-full bg-indigo-500/80 w-1/3 rounded-full blur-[1px]"></div>
+                                <div className="absolute left-0 top-0 h-full bg-indigo-400 w-1/3 rounded-full"
+                                     style={{ animation: 'slideright 1.5s ease-in-out infinite alternate' }}></div>
+                              </div>
+                              
+                              <p className="text-[10px] text-gray-500 mt-2 uppercase tracking-wider">
+                                Contacting remote surveillance server...
+                              </p>
+                            </div>
+                          </div>
                         </div>
                       )}
                     </div>

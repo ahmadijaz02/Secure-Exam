@@ -6,7 +6,6 @@ function NotificationItem({ notification }) {
   const [isVisible, setIsVisible] = useState(false);
 
   useEffect(() => {
-    // Trigger animation
     setIsVisible(true);
   }, []);
 
@@ -61,8 +60,8 @@ function NotificationItem({ notification }) {
     }
   };
 
-  const animationClasses = isVisible 
-    ? 'translate-x-0 opacity-100' 
+  const animationClasses = isVisible
+    ? 'translate-x-0 opacity-100'
     : 'translate-x-full opacity-0';
 
   return (

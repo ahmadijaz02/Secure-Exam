@@ -20,43 +20,30 @@ SOCKET_EMIT_EVERY_N = max(1, int(os.environ.get('SOCKET_EMIT_EVERY_N', '1')))
 # Global state
 current_process = None
 monitoring_active = False
-email_alerts_enabled = True  # Toggled by frontend; when False, no emails are sent
+email_alerts_enabled = True  
 
-# Per-student behaviour escalation trackers.
-# Key: student identifier ("roll_number" or "seat_number"), Value: list of timestamps
-# When a student accumulates THRESHOLD occurrences within WINDOW seconds,
-# the alert is escalated to warning level 2.
 HEAD_TURN_WINDOW_SECONDS = 60
 HEAD_TURN_ESCALATION_THRESHOLD = 3
-student_head_turn_tracker = {}   # { student_key: [timestamp, ...] }
+student_head_turn_tracker = {}  
 
-HAND_SIGNAL_WINDOW_SECONDS = 60
-HAND_SIGNAL_ESCALATION_THRESHOLD = 3
-student_hand_signal_tracker = {}  # { student_key: [timestamp, ...] }
 
-# Keep email dispatch non-blocking and rate-limited so stdout reader does not stall.
+HAND_GESTURE_WINDOW_SECONDS = 60
+HAND_GESTURE_ESCALATION_THRESHOLD = 3
+student_hand_gesture_tracker = {}  
+
 EMAIL_ALERT_COOLDOWN_SECONDS = 20
 last_email_sent_at = {}
 
-# ---------------------------------------------------------------------------
-# In-memory seating plan cache — avoids a MongoDB round-trip on every alert.
-# ---------------------------------------------------------------------------
-_seat_cache = {}        # { session_id: {'seats': [...], 'fetched_at': float} }
-_SEAT_CACHE_TTL = 60.0  # seconds before re-fetching from DB
 
-# ---------------------------------------------------------------------------
-# Last confirmed student per session — used to attribute behaviour alerts
-# (HEAD_DOWN, HAND_SIGNAL …) that carry no real bounding box.
-# A confirmation is only set when a hard YOLO object detection (phone, watch,
-# paper) successfully resolves to a specific seat with high confidence.
-# It expires after 30 s to avoid stale attribution.
-# ---------------------------------------------------------------------------
-_last_confirmed_student = {}   # { session_id: {'student': dict, 'ts': float} }
-_LAST_CONFIRMED_TTL = 30.0     # seconds
+_seat_cache = {}       
+_SEAT_CACHE_TTL = 60.0  
+
+_last_confirmed_student = {}   
+_LAST_CONFIRMED_TTL = 30.0     
 
 
 def _send_alert_email_async(app_obj, exam_session_id, reason, timestamp, filename, student_name, roll_number, seat_number, head_turn_escalated, head_turn_count, window_seconds):
-    """Send alert email in a background thread to avoid blocking frame stream I/O."""
+    
     try:
         with app_obj.app_context():
             now_ts = time.time()
@@ -83,17 +70,14 @@ def _send_alert_email_async(app_obj, exam_session_id, reason, timestamp, filenam
                 print("[EMAIL] No teacher email found — skipping email send.")
                 return
 
-            # Resolve evidence file to an absolute disk path
             evidence_abs_path = None
             if filename:
                 server_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
                 suspicious_dir = os.path.join(server_dir, 'suspicious_alerts')
 
-                # filename may already be an absolute path
                 if os.path.isabs(filename) and os.path.isfile(filename):
                     evidence_abs_path = filename
                 else:
-                    # Normalise: strip leading slashes and 'suspicious_alerts/' prefix
                     clean = filename.replace('\\', '/').lstrip('/')
                     if clean.startswith('suspicious_alerts/'):
                         clean = clean.split('suspicious_alerts/', 1)[1]
@@ -103,7 +87,6 @@ def _send_alert_email_async(app_obj, exam_session_id, reason, timestamp, filenam
                     else:
                         print(f"[EMAIL] Evidence file not found: {candidate}")
 
-            # Build plain-text fallback body
             from app.utils.helpers import send_email_alert
             plain_body = f"Level 2 Warning: {reason} detected at {timestamp}."
             if head_turn_escalated and student_name:
@@ -116,11 +99,9 @@ def _send_alert_email_async(app_obj, exam_session_id, reason, timestamp, filenam
             if evidence_abs_path:
                 plain_body += f"\nEvidence image attached."
 
-            # Build dashboard link
             frontend_url = os.environ.get('FRONTEND_URL', 'http://localhost:3000')
             dashboard_url = f"{frontend_url}/teacher/sessions"
 
-            # Subject line
             subject_parts = [f"🚨 Exam Alert: {reason}"]
             if student_name:
                 subject_parts.append(f"— {student_name}")
@@ -151,7 +132,6 @@ def _send_alert_email_async(app_obj, exam_session_id, reason, timestamp, filenam
 
 @socketio.on('connect', namespace='/')
 def handle_default_connect():
-    """When frontend connects to default namespace, send a log so they see connection works."""
     try:
         print("Client connected to default namespace (monitoring)")
         socketio.emit('log', 'Connected to monitoring server', namespace='/')
@@ -181,7 +161,6 @@ def handle_monitoring_disconnect():
 
 @socketio.on('toggle_email_alerts', namespace='/')
 def handle_toggle_email_alerts(data):
-    """Toggle email alerts on/off from the frontend."""
     global email_alerts_enabled
     try:
         if isinstance(data, dict):
@@ -207,31 +186,24 @@ def handle_toggle_email_alerts(data):
 
 
 def get_severity(reason):
-    """Get alert severity level"""
     object_alerts = {'PHONE_DETECTED', 'WATCH_DETECTED', 'PAPER_PASSING'}
-    return 'high' if reason in object_alerts else 'low'
+    behaviour_alerts = {'HAND_GESTURE'}
+    return 'high' if reason in object_alerts else 'medium' if reason in behaviour_alerts else 'low'
 
 
 def get_alert_category(reason):
-    """Classify alert as object or behavior category."""
     object_alerts = {'PHONE_DETECTED', 'WATCH_DETECTED', 'PAPER_PASSING'}
-    return 'object' if reason in object_alerts else 'behavior'
+    hand_alerts = {'HAND_GESTURE'}
+    return 'object' if reason in object_alerts else 'hand_gesture' if reason in hand_alerts else 'behavior'
 
 
 def _get_cached_seats(app, exam_session_id):
-    """Return flat list of assigned seats for the session, using in-memory cache.
 
-    Builds the list once from MongoDB and refreshes every _SEAT_CACHE_TTL seconds.
-    Each entry is a dict: {seat_number, student_name, roll_number, norm_x, norm_y,
-    plan_id, classroom_name}.
-    Only seats that have a student name AND norm coordinates are included.
-    """
     now_ts = time.time()
     cached = _seat_cache.get(exam_session_id)
     if cached and (now_ts - cached['fetched_at']) < _SEAT_CACHE_TTL:
         return cached['seats']
 
-    # Re-fetch from DB
     try:
         session = app.exam_session_model.find_by_id(exam_session_id)
         if not session:
@@ -271,23 +243,7 @@ def _get_cached_seats(app, exam_session_id):
 
 def resolve_student_from_detection(app, exam_session_id, norm_x, norm_y,
                                     is_behaviour_alert=False):
-    """Match a detection to a student in the active seating plan.
-
-    Both object alerts and behaviour alerts now carry real bounding-box
-    coordinates (behaviour alerts use the MediaPipe face bbox).  We always
-    attempt coordinate-based matching first.  For behaviour alerts, if the
-    coordinate match fails we fall back to the cached last-confirmed student
-    or a single-student shortcut.
-
-    Args:
-        app: Flask application object.
-        exam_session_id: Current exam session ID.
-        norm_x / norm_y: Detection centre, normalised 0-1.
-        is_behaviour_alert: True for HEAD_* / HAND_SIGNAL / HEAD_DOWN alerts.
-
-    Returns:
-        dict with student_name, roll_number, seat_number … or None.
-    """
+    
     if not exam_session_id:
         return None
 
@@ -297,9 +253,6 @@ def resolve_student_from_detection(app, exam_session_id, norm_x, norm_y,
             print("[resolve_student] No assigned seats found in session.")
             return None
 
-        # ------------------------------------------------------------------
-        # Try coordinate-based matching if we have real coordinates
-        # ------------------------------------------------------------------
         if norm_x is not None and norm_y is not None:
             best_match = None
             best_score = float('inf')
@@ -329,7 +282,6 @@ def resolve_student_from_detection(app, exam_session_id, norm_x, norm_y,
                     best_match = seat
 
             if best_match:
-                # Cache this confirmed match
                 _last_confirmed_student[exam_session_id] = {
                     'student': best_match,
                     'ts': time.time(),
@@ -342,27 +294,20 @@ def resolve_student_from_detection(app, exam_session_id, norm_x, norm_y,
                 )
                 return best_match
 
-            # Coordinate match failed — log it
             print(
                 f"[resolve_student] No coordinate match — norm=({norm_x:.3f},{norm_y:.3f}). "
                 f"Fell outside all seat bounding boxes and margins."
             )
 
-        # ------------------------------------------------------------------
-        # Fallback for behaviour alerts (or missing coordinates)
-        # ------------------------------------------------------------------
         if is_behaviour_alert or norm_x is None or norm_y is None:
-            # (a) recent YOLO-based confirmation
             cached = _last_confirmed_student.get(exam_session_id)
             if cached and (time.time() - cached['ts']) < _LAST_CONFIRMED_TTL:
                 s = cached['student']
                 print(f"[resolve_student] Behaviour alert fallback → last confirmed: {s['student_name']}")
                 return s
-            # (b) only one student in room
             if len(seats) == 1:
                 print(f"[resolve_student] Single student fallback: {seats[0]['student_name']}")
                 return seats[0]
-            # (c) cannot safely attribute
             print("[resolve_student] Behaviour alert with no confirmed student cached.")
             return None
 
@@ -374,10 +319,6 @@ def resolve_student_from_detection(app, exam_session_id, norm_x, norm_y,
 
 
 def process_monitor_output(process, socketio_instance, app):
-    """
-    Read monitor.py stdout line-by-line and emit via Socket.IO.
-    Runs inside Flask app context so emits reach all clients in /monitoring namespace.
-    """
     global monitoring_active
     frame_count = 0
     last_frame_emit_ts = 0.0
@@ -392,7 +333,6 @@ def process_monitor_output(process, socketio_instance, app):
                 if not line:
                     continue
 
-                # Emit same as FYP: default namespace, "frame" (raw base64) and "log" (string)
                 if line.startswith('FRAME:'):
                     frame_data = line[6:]
                     if not frame_data or len(frame_data) < 100:
@@ -410,12 +350,10 @@ def process_monitor_output(process, socketio_instance, app):
                         print(f"[Monitor] Emitted frame #{frame_count}")
 
                     try:
-                        # Emit frame with server timestamp for latency measurement
                         socketio_instance.emit('frame', {
                             'frame': frame_data,
                             'ts': int(now_ts * 1000)
                         }, namespace='/')
-                        # Optional backward compatibility event (off by default for lower latency)
                         if EMIT_LEGACY_MONITORING_FRAME:
                             socketio_instance.emit('video_frame', {'frame': f'data:image/jpeg;base64,{frame_data}'}, namespace='/monitoring')
                     except Exception as e:
@@ -428,7 +366,6 @@ def process_monitor_output(process, socketio_instance, app):
                     filename = None
                     bbox_info = None
 
-                    # New robust format: ALERT:<reason>|<timestamp>|<filename>|<bbox>
                     if '|' in raw_payload:
                         parts = raw_payload.split('|', 3)
                         reason = parts[0] if len(parts) > 0 else ""
@@ -436,9 +373,6 @@ def process_monitor_output(process, socketio_instance, app):
                         filename = parts[2] if len(parts) > 2 else None
                         bbox_info = parts[3] if len(parts) > 3 else None
                     else:
-                        # Legacy fallback: ALERT:<reason>:<iso_timestamp>:<filename>:<bbox>
-                        # Split reason first, then parse the remaining payload with an ISO timestamp regex
-                        # so ':' inside timestamp/Windows paths does not corrupt filename extraction.
                         first_colon = raw_payload.find(':')
                         if first_colon >= 0:
                             reason = raw_payload[:first_colon]
@@ -465,8 +399,6 @@ def process_monitor_output(process, socketio_instance, app):
                                     timestamp = rest
                                     filename = None
 
-                    # Parse optional bounding-box centre + frame dimensions
-                    # Format: cx,cy,frame_w,frame_h
                     norm_x = None
                     norm_y = None
                     if bbox_info:
@@ -501,7 +433,6 @@ def process_monitor_output(process, socketio_instance, app):
                                 normalized = normalized.split('suspicious_alerts/', 1)[1]
                             relative_path = normalized
 
-                        # Prevent invalid traversal segments in generated public URL.
                         relative_parts = [part for part in relative_path.split('/') if part not in ('', '.', '..')]
                         safe_relative = '/'.join(relative_parts)
                         if safe_relative:
@@ -511,15 +442,10 @@ def process_monitor_output(process, socketio_instance, app):
 
                     print(f"[Monitor] Alert: {reason}")
 
-                    # Resolve student from seating plan (if coordinates available)
                     exam_session_id = getattr(app, 'current_exam_session_id', None)
-                    # Behaviour alerts (head turns, hand signals, head down) use a
-                    # synthetic frame-centre bbox that is unreliable for seat matching.
-                    # Pass the flag so resolve_student uses the cached last-confirmed
-                    # YOLO match instead of guessing from coordinates.
                     _BEHAVIOUR_ALERT_REASONS = {
                         'HEAD_LEFT', 'HEAD_RIGHT', 'HEAD_DOWN',
-                        'HAND_SIGNAL', 'HAND_MOUTH', 'SIGN_LANGUAGE_CHEATING'
+                        'HAND_GESTURE',
                     }
                     _is_behaviour = reason in _BEHAVIOUR_ALERT_REASONS
                     student_info = resolve_student_from_detection(
@@ -533,10 +459,9 @@ def process_monitor_output(process, socketio_instance, app):
                     if student_info:
                         print(f"[Monitor] Detected student: {student_name} (Roll: {roll_number}, Seat: {seat_number})")
 
-                    # Determine warning level and type
                     object_types = ['PHONE_DETECTED', 'WATCH_DETECTED', 'PAPER_PASSING']
                     head_turn_types = ['HEAD_LEFT', 'HEAD_RIGHT']
-                    hand_signal_types = ['HAND_SIGNAL']
+                    hand_gesture_types = ['HAND_GESTURE']
                     behaviour_escalated = False
                     escalation_count = 0
                     escalation_window = 0
@@ -549,7 +474,6 @@ def process_monitor_output(process, socketio_instance, app):
                         warning_level = 1
                         send_email = False
 
-                    # --- Head-turn escalation logic ---
                     if reason in head_turn_types and student_info:
                         student_key = roll_number or seat_number or student_name
                         now_ts = time.time()
@@ -578,36 +502,34 @@ def process_monitor_output(process, socketio_instance, app):
                                 f"{head_turn_count} turns in last {HEAD_TURN_WINDOW_SECONDS}s"
                             )
 
-                    # --- Hand-signal escalation logic ---
-                    if reason in hand_signal_types and student_info:
+                    if reason in hand_gesture_types and student_info:
                         student_key = roll_number or seat_number or student_name
                         now_ts = time.time()
 
-                        if student_key not in student_hand_signal_tracker:
-                            student_hand_signal_tracker[student_key] = []
-                        student_hand_signal_tracker[student_key].append(now_ts)
+                        if student_key not in student_hand_gesture_tracker:
+                            student_hand_gesture_tracker[student_key] = []
+                        student_hand_gesture_tracker[student_key].append(now_ts)
 
-                        cutoff = now_ts - HAND_SIGNAL_WINDOW_SECONDS
-                        student_hand_signal_tracker[student_key] = [
-                            t for t in student_hand_signal_tracker[student_key] if t >= cutoff
+                        cutoff = now_ts - HAND_GESTURE_WINDOW_SECONDS
+                        student_hand_gesture_tracker[student_key] = [
+                            t for t in student_hand_gesture_tracker[student_key] if t >= cutoff
                         ]
 
-                        hand_signal_count = len(student_hand_signal_tracker[student_key])
+                        gesture_count = len(student_hand_gesture_tracker[student_key])
 
-                        if hand_signal_count >= HAND_SIGNAL_ESCALATION_THRESHOLD:
+                        if gesture_count >= HAND_GESTURE_ESCALATION_THRESHOLD:
                             warning_level = 2
                             send_email = True
                             behaviour_escalated = True
-                            escalation_count = hand_signal_count
-                            escalation_window = HAND_SIGNAL_WINDOW_SECONDS
-                            escalation_label = 'hand signals'
+                            escalation_count = gesture_count
+                            escalation_window = HAND_GESTURE_WINDOW_SECONDS
+                            escalation_label = 'hand gestures'
                             print(
-                                f"[Monitor] Hand-signal ESCALATED to Level 2 for "
+                                f"[Monitor] Hand-gesture ESCALATED to Level 2 for "
                                 f"{student_name} ({roll_number}) — "
-                                f"{hand_signal_count} signals in last {HAND_SIGNAL_WINDOW_SECONDS}s"
+                                f"{gesture_count} gestures in last {HAND_GESTURE_WINDOW_SECONDS}s"
                             )
 
-                    # Build description with student info
                     description = f"Auto-detected: {reason}"
                     if student_info:
                         description = f"{reason} — {student_name} (Roll: {roll_number}, Seat: {seat_number})"
@@ -670,7 +592,6 @@ def process_monitor_output(process, socketio_instance, app):
                         print(f"Error emitting alert: {e}")
 
                 else:
-                    # Status/log line - emit as "log" to default namespace (FYP style)
                     print(f"[Monitor] {line[:200]}")
                     try:
                         socketio_instance.emit('log', line, namespace='/')
@@ -692,7 +613,6 @@ def process_monitor_output(process, socketio_instance, app):
 @bp.route('/start', methods=['POST'])
 @jwt_required()
 def start_monitoring():
-    """Start monitoring camera - launch monitor.py and stream frames via Socket.IO"""
     global current_process, monitoring_active, SOCKET_STREAM_TARGET_FPS, SOCKET_EMIT_EVERY_N
 
     try:
@@ -767,7 +687,6 @@ def start_monitoring():
 
         monitoring_active = True
         app.current_exam_session_id = session_id
-        # Clear seat cache so this session gets a fresh fetch immediately
         _seat_cache.pop(session_id, None)
         session_model.update_session(session_id, {'is_active': True})
 
@@ -804,7 +723,6 @@ def start_monitoring():
 
         socketio_instance = current_app.extensions.get('socketio') or socketio
 
-        # Use a real thread for subprocess readline (avoids eventlet blocking on pipe I/O)
         reader = threading.Thread(
             target=process_monitor_output,
             args=(current_process, socketio_instance, app),
@@ -830,7 +748,6 @@ def start_monitoring():
 @bp.route('/stop', methods=['POST'])
 @jwt_required()
 def stop_monitoring():
-    """Stop monitoring camera"""
     global current_process, monitoring_active
 
     try:
@@ -860,9 +777,8 @@ def stop_monitoring():
                 return jsonify({'error': 'Access denied. Session not assigned to you.'}), 403
 
         monitoring_active = False
-        # Reset per-student behaviour escalation trackers
         student_head_turn_tracker.clear()
-        student_hand_signal_tracker.clear()
+        student_hand_gesture_tracker.clear()
         if current_process:
             current_process.terminate()
             try:
@@ -885,7 +801,6 @@ def stop_monitoring():
 
 @bp.route('/status', methods=['GET'])
 def get_status():
-    """Get monitoring status"""
     global monitoring_active, current_process
     is_running = monitoring_active and current_process and current_process.poll() is None
     return jsonify({

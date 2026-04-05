@@ -6,7 +6,6 @@ from flask_socketio import SocketIO
 from pymongo import MongoClient
 from config import config
 
-# Initialize extensions
 jwt = JWTManager()
 bcrypt = Bcrypt()
 socketio = SocketIO(
@@ -22,12 +21,9 @@ def create_app(config_name='default'):
     app = Flask(__name__)
     app.config.from_object(config[config_name])
 
-    # Initialize extensions with app
     jwt.init_app(app)
     bcrypt.init_app(app)
     socketio.init_app(app)
-
-    # Configure CORS (allow frontend URLs for dev)
     CORS(app, origins=[
         app.config['FRONTEND_URL'],
         'http://127.0.0.1:5173',
@@ -43,30 +39,21 @@ def create_app(config_name='default'):
         raise RuntimeError("MONGODB_URI is not set. Provide your MongoDB Atlas connection string in the environment or .env.")
 
     print(f"🔗 Connecting to MongoDB...")
-    print(f"   URI: {app.config['MONGODB_URI']}")
     print(f"   Database: {app.config['MONGODB_DB_NAME']}")
 
     app.mongo_client = MongoClient(app.config['MONGODB_URI'])
     app.db = app.mongo_client[app.config['MONGODB_DB_NAME']]
 
-    # Test MongoDB connection and show detailed info
     try:
-        # Ping the database
         app.mongo_client.admin.command('ping')
-
-        # Get server info
         server_info = app.mongo_client.server_info()
-
-        # Get database stats
         db_stats = app.db.command('dbstats')
 
         print("✅ MongoDB connection successful!")
         print(f"   Server Version: {server_info.get('version', 'Unknown')}")
-        print(f"   Server Host: {app.mongo_client.address[0]}:{app.mongo_client.address[1]}")
         print(f"   Database Size: {db_stats.get('dataSize', 0)} bytes")
         print(f"   Collections: {len(app.db.list_collection_names())}")
 
-        # List existing collections
         collections = app.db.list_collection_names()
         if collections:
             print(f"   Existing Collections: {', '.join(collections)}")
@@ -77,7 +64,6 @@ def create_app(config_name='default'):
         print(f"❌ MongoDB connection failed: {e}")
         print("   Make sure MongoDB is running on localhost:27017")
 
-    # Register blueprints
     from app.auth import bp as auth_bp
     app.register_blueprint(auth_bp, url_prefix='/api/auth')
 
@@ -90,7 +76,6 @@ def create_app(config_name='default'):
     from app.monitoring import bp as monitoring_bp
     app.register_blueprint(monitoring_bp, url_prefix='/api/monitoring')
 
-    # Initialize models
     print("📊 Initializing MongoDB models...")
     from app.models import User, ExamSession, Incident, SeatingPlan
 
