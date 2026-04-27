@@ -18,6 +18,7 @@ import NotFoundPage from './pages/error/NotFoundPage';
 
 // Admin Pages
 import AdminDashboard from './pages/admin/AdminDashboard';
+import AdminLiveSessions from './pages/admin/AdminLiveSessions';
 import AdminExamSessions from './pages/admin/AdminExamSessions';
 import AdminSeatingPlans from './pages/admin/AdminSeatingPlans';
 import AdminUsers from './pages/admin/AdminUsers';
@@ -59,6 +60,11 @@ function App() {
               <Route path="/admin/dashboard" element={
                 <AdminRoute>
                   <AdminLayout><AdminDashboard /></AdminLayout>
+                </AdminRoute>
+              } />
+              <Route path="/admin/live-sessions" element={
+                <AdminRoute>
+                  <AdminLayout><AdminLiveSessions /></AdminLayout>
                 </AdminRoute>
               } />
               <Route path="/admin/exam-sessions" element={

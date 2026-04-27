@@ -8,6 +8,8 @@ import Input from '../../components/ui/Input';
 
 import LoadingSpinner from '../../components/ui/LoadingSpinner';
 
+import ConfirmationModal from '../../components/ui/ConfirmationModal';
+
 import adminService from '../../api/services/adminService';
 
 import { useNotification } from '../../context/notification/NotificationContext';
@@ -45,7 +47,12 @@ function AdminSeatingPlans() {
   const [showSeatingEditor, setShowSeatingEditor] = useState(false);
 
   const [currentPlan, setCurrentPlan] = useState(null);
-
+  const [confirmDialog, setConfirmDialog] = useState({
+    isOpen: false,
+    action: null, // 'delete', 'duplicate'
+    targetId: null,
+    isLoading: false
+  });
   const { addNotification } = useNotification();
 
 
@@ -270,32 +277,48 @@ function AdminSeatingPlans() {
     setCurrentPlan(plan);
   };
 
-  const handleDelete = async (planId) => {
-    if (!window.confirm('Are you sure you want to delete this seating plan? It will be unlinked from any exam sessions.')) {
-      return;
-    }
+  const handleDelete = (planId) => {
+    setConfirmDialog({
+      isOpen: true,
+      action: 'delete',
+      targetId: planId,
+      isLoading: false
+    });
+  };
 
+  const handleDuplicate = (planId) => {
+    setConfirmDialog({
+      isOpen: true,
+      action: 'duplicate',
+      targetId: planId,
+      isLoading: false
+    });
+  };
+
+  const handleConfirmAction = async () => {
+    const { action, targetId } = confirmDialog;
+    
+    setConfirmDialog(prev => ({ ...prev, isLoading: true }));
+    
     try {
-      await adminService.deleteSeatingPlan(planId);
-      addNotification('success', 'Seating plan deleted and unlinked from all sessions');
+      if (action === 'delete') {
+        await adminService.deleteSeatingPlan(targetId);
+        addNotification('success', 'Seating plan deleted and unlinked from all sessions');
+      } else if (action === 'duplicate') {
+        await adminService.duplicateSeatingPlan(targetId);
+        addNotification('success', 'Seating plan duplicated successfully');
+      }
+      
       fetchSeatingPlans();
+      setConfirmDialog({ isOpen: false, action: null, targetId: null, isLoading: false });
     } catch (error) {
-      addNotification('error', error.response?.data?.message || 'Failed to delete seating plan');
+      addNotification('error', error.response?.data?.message || 'Operation failed');
+      setConfirmDialog(prev => ({ ...prev, isLoading: false }));
     }
   };
 
-  const handleDuplicate = async (planId) => {
-    if (!window.confirm('Duplicate this seating plan? This creates a pristine copy with your drawn boxes but no students.')) {
-      return;
-    }
-
-    try {
-      await adminService.duplicateSeatingPlan(planId);
-      addNotification('success', 'Seating plan duplicated successfully');
-      fetchSeatingPlans();
-    } catch (error) {
-      addNotification('error', error.response?.data?.message || 'Failed to duplicate seating plan');
-    }
+  const handleCancelAction = () => {
+    setConfirmDialog({ isOpen: false, action: null, targetId: null, isLoading: false });
   };
 
   const resetForm = () => {
@@ -876,6 +899,27 @@ function AdminSeatingPlans() {
             }
           }
         }}
+      />
+
+      {/* Confirmation Modal */}
+      <ConfirmationModal
+        isOpen={confirmDialog.isOpen}
+        title={
+          confirmDialog.action === 'delete' 
+            ? 'Delete Seating Plan' 
+            : 'Duplicate Seating Plan'
+        }
+        message={
+          confirmDialog.action === 'delete'
+            ? 'This will permanently delete the seating plan and unlink it from any exam sessions. This action cannot be undone.'
+            : 'This will create a pristine copy with your drawn boxes but no students. Continue?'
+        }
+        confirmText={confirmDialog.action === 'delete' ? 'Delete' : 'Duplicate'}
+        cancelText="Cancel"
+        onConfirm={handleConfirmAction}
+        onCancel={handleCancelAction}
+        isDangerous={confirmDialog.action === 'delete'}
+        isLoading={confirmDialog.isLoading}
       />
     </div>
   );

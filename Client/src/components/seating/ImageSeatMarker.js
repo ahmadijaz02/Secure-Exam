@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import Button from '../ui/Button';
 import LoadingSpinner from '../ui/LoadingSpinner';
+import ConfirmationModal from '../ui/ConfirmationModal';
 import { useNotification } from '../../context/notification/NotificationContext';
 import adminService from '../../api/services/adminService';
 import { API_CONFIG } from '../../api/config/apiConfig';
@@ -24,6 +25,10 @@ function ImageSeatMarker({ planId, plan, onSeatsMarked, onNext }) {
 
   const imageCanvasRef = useRef(null);
   const imageContainerRef = useRef(null);
+  const [confirmDialog, setConfirmDialog] = useState({
+    isOpen: false,
+    isLoading: false
+  });
   const { addNotification } = useNotification();
 
   // Load existing plan data if editing
@@ -229,11 +234,18 @@ function ImageSeatMarker({ planId, plan, onSeatsMarked, onNext }) {
 
   // Clear all marked seats
   const handleClearSeats = () => {
-    if (window.confirm('Clear all marked seats?')) {
-      setMarkedSeats([]);
-      setSelectedSeatIndex(null);
-      addNotification('info', 'Seats cleared');
-    }
+    setConfirmDialog({ isOpen: true, isLoading: false });
+  };
+
+  const handleConfirmClear = () => {
+    setMarkedSeats([]);
+    setSelectedSeatIndex(null);
+    addNotification('info', 'Seats cleared');
+    setConfirmDialog({ isOpen: false, isLoading: false });
+  };
+
+  const handleCancelClear = () => {
+    setConfirmDialog({ isOpen: false, isLoading: false });
   };
 
   return (
@@ -566,6 +578,19 @@ function ImageSeatMarker({ planId, plan, onSeatsMarked, onNext }) {
           </div>
         </div>
       )}
+
+      {/* Confirmation Modal */}
+      <ConfirmationModal
+        isOpen={confirmDialog.isOpen}
+        title="Clear All Seats"
+        message="Are you sure you want to clear all marked seats? This action cannot be undone."
+        confirmText="Clear"
+        cancelText="Cancel"
+        onConfirm={handleConfirmClear}
+        onCancel={handleCancelClear}
+        isDangerous={true}
+        isLoading={confirmDialog.isLoading}
+      />
     </div>
   );
 }

@@ -53,9 +53,16 @@ const LogoutIcon = () => (
   </svg>
 );
 
+const LiveSessionsIcon = () => (
+  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.75} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+  </svg>
+);
+
 /* ─── Icon color configs ─── */
 const iconColors = {
   dashboard:     { bg: 'bg-indigo-100 dark:bg-indigo-900/30', text: 'text-indigo-600 dark:text-indigo-400', activeBg: 'bg-indigo-500', activeText: 'text-white' },
+  liveSessions:  { bg: 'bg-rose-100 dark:bg-rose-900/30', text: 'text-rose-600 dark:text-rose-400', activeBg: 'bg-rose-500', activeText: 'text-white' },
   examSessions:  { bg: 'bg-violet-100 dark:bg-violet-900/30', text: 'text-violet-600 dark:text-violet-400', activeBg: 'bg-violet-500', activeText: 'text-white' },
   seatingPlans:  { bg: 'bg-teal-100 dark:bg-teal-900/30', text: 'text-teal-600 dark:text-teal-400', activeBg: 'bg-teal-500', activeText: 'text-white' },
   users:         { bg: 'bg-amber-100 dark:bg-amber-900/30', text: 'text-amber-600 dark:text-amber-400', activeBg: 'bg-amber-500', activeText: 'text-white' },
@@ -73,6 +80,7 @@ function AdminLayout({ children }) {
 
   const adminMenuItems = [
     { label: 'Dashboard', path: '/admin/dashboard', icon: <DashboardIcon />, colorKey: 'dashboard' },
+    { label: 'Live Sessions', path: '/admin/live-sessions', icon: <LiveSessionsIcon />, colorKey: 'liveSessions' },
     { label: 'Exam Sessions', path: '/admin/exam-sessions', icon: <ExamSessionsIcon />, colorKey: 'examSessions' },
     { label: 'Seating Plans', path: '/admin/seating-plans', icon: <SeatingPlansIcon />, colorKey: 'seatingPlans' },
     { label: 'Users', path: '/admin/users', icon: <UsersIcon />, colorKey: 'users' },

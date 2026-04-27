@@ -3,6 +3,7 @@ import Card from '../../components/ui/Card';
 import Button from '../../components/ui/Button';
 import Input from '../../components/ui/Input';
 import LoadingSpinner from '../../components/ui/LoadingSpinner';
+import ConfirmationModal from '../../components/ui/ConfirmationModal';
 import adminService from '../../api/services/adminService';
 import { useNotification } from '../../context/notification/NotificationContext';
 
@@ -12,6 +13,11 @@ function AdminUsers() {
   const [showModal, setShowModal] = useState(false);
   const [editingUser, setEditingUser] = useState(null);
   const [filterRole, setFilterRole] = useState('');
+  const [confirmDialog, setConfirmDialog] = useState({
+    isOpen: false,
+    targetId: null,
+    isLoading: false
+  });
   const { addNotification } = useNotification();
 
   const [formData, setFormData] = useState({
@@ -82,18 +88,30 @@ function AdminUsers() {
     setShowModal(true);
   };
 
-  const handleDelete = async (userId) => {
-    if (!window.confirm('Are you sure you want to delete this user?')) {
-      return;
-    }
+  const handleDelete = (userId) => {
+    setConfirmDialog({
+      isOpen: true,
+      targetId: userId,
+      isLoading: false
+    });
+  };
 
+  const handleConfirmDelete = async () => {
+    setConfirmDialog(prev => ({ ...prev, isLoading: true }));
+    
     try {
-      await adminService.deleteUser(userId);
+      await adminService.deleteUser(confirmDialog.targetId);
       addNotification('success', 'User deleted successfully');
       fetchUsers();
+      setConfirmDialog({ isOpen: false, targetId: null, isLoading: false });
     } catch (error) {
       addNotification('error', error.response?.data?.message || 'Failed to delete user');
+      setConfirmDialog(prev => ({ ...prev, isLoading: false }));
     }
+  };
+
+  const handleCancelDelete = () => {
+    setConfirmDialog({ isOpen: false, targetId: null, isLoading: false });
   };
 
   const resetForm = () => {
@@ -355,6 +373,19 @@ function AdminUsers() {
           </div>
         </div>
       )}
+
+      {/* Confirmation Modal */}
+      <ConfirmationModal
+        isOpen={confirmDialog.isOpen}
+        title="Delete User"
+        message="This will permanently delete the user account. This action cannot be undone."
+        confirmText="Delete"
+        cancelText="Cancel"
+        onConfirm={handleConfirmDelete}
+        onCancel={handleCancelDelete}
+        isDangerous={true}
+        isLoading={confirmDialog.isLoading}
+      />
     </div>
   );
 }

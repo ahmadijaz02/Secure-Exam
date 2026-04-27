@@ -3,6 +3,7 @@ import Card from '../../components/ui/Card';
 import Button from '../../components/ui/Button';
 import Input from '../../components/ui/Input';
 import LoadingSpinner from '../../components/ui/LoadingSpinner';
+import ConfirmationModal from '../../components/ui/ConfirmationModal';
 import adminService from '../../api/services/adminService';
 import { useNotificationActions } from '../../context/notification/NotificationContext';
 
@@ -17,7 +18,15 @@ function AdminExamSessions() {
   const [linkedSeatingPlans, setLinkedSeatingPlans] = useState([]);
   const [availableSeatingPlans, setAvailableSeatingPlans] = useState([]);
   const [seatingPlanLoading, setSeatingPlanLoading] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [confirmDialog, setConfirmDialog] = useState({
+    isOpen: false,
+    action: null, // 'delete', 'unlink'
+    targetId: null,
+    isLoading: false
+  });
   const planActionInFlightRef = useRef(false);
+  const submittingRef = useRef(false);
   const { showSuccess, showError } = useNotificationActions();
 
   const [formData, setFormData] = useState({
@@ -85,6 +94,11 @@ function AdminExamSessions() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     
+    // Prevent duplicate submissions
+    if (submittingRef.current) return;
+    submittingRef.current = true;
+    setIsSubmitting(true);
+    
     try {
       const sessionData = {
         ...formData,
@@ -105,6 +119,9 @@ function AdminExamSessions() {
       fetchData();
     } catch (error) {
       showError(error.response?.data?.message || 'Operation failed');
+    } finally {
+      submittingRef.current = false;
+      setIsSubmitting(false);
     }
   };
 
@@ -170,36 +187,54 @@ function AdminExamSessions() {
   };
 
   const handleUnlinkSeatingPlan = async (planId) => {
+    setConfirmDialog({
+      isOpen: true,
+      action: 'unlink',
+      targetId: planId,
+      isLoading: false
+    });
+  };
+
+  const handleDelete = async (sessionId) => {
+    setConfirmDialog({
+      isOpen: true,
+      action: 'delete',
+      targetId: sessionId,
+      isLoading: false
+    });
+  };
+
+  const handleConfirmAction = async () => {
     if (planActionInFlightRef.current) return;
 
-    if (!window.confirm('Are you sure you want to unlink this seating plan?')) {
-      return;
-    }
-
+    const { action, targetId } = confirmDialog;
+    
+    setConfirmDialog(prev => ({ ...prev, isLoading: true }));
+    
     try {
       planActionInFlightRef.current = true;
-      await adminService.unlinkSeatingPlanFromSession(selectedSessionForSeating.id, planId);
-      showSuccess('Seating plan unlinked successfully');
-      await fetchSessionSeatingPlans(selectedSessionForSeating.id, { showLoader: false });
+      
+      if (action === 'unlink') {
+        await adminService.unlinkSeatingPlanFromSession(selectedSessionForSeating.id, targetId);
+        showSuccess('Seating plan unlinked successfully');
+        await fetchSessionSeatingPlans(selectedSessionForSeating.id, { showLoader: false });
+      } else if (action === 'delete') {
+        await adminService.deleteExamSession(targetId);
+        showSuccess('Exam session deleted successfully');
+        fetchData();
+      }
+      
+      setConfirmDialog({ isOpen: false, action: null, targetId: null, isLoading: false });
     } catch (error) {
-      showError(error.response?.data?.message || 'Failed to unlink seating plan');
+      showError(error.response?.data?.message || 'Operation failed');
+      setConfirmDialog(prev => ({ ...prev, isLoading: false }));
     } finally {
       planActionInFlightRef.current = false;
     }
   };
 
-  const handleDelete = async (sessionId) => {
-    if (!window.confirm('Are you sure you want to delete this exam session?')) {
-      return;
-    }
-
-    try {
-      await adminService.deleteExamSession(sessionId);
-      showSuccess('Exam session deleted successfully');
-      fetchData();
-    } catch (error) {
-      showError(error.response?.data?.message || 'Failed to delete session');
-    }
+  const handleCancelAction = () => {
+    setConfirmDialog({ isOpen: false, action: null, targetId: null, isLoading: false });
   };
 
   const resetForm = () => {
@@ -451,10 +486,31 @@ function AdminExamSessions() {
               </div>
               
               <div className="flex gap-3 mt-6">
-                <Button type="submit" variant="gradient-primary" className="flex-1">
-                  {editingSession ? 'Update Session' : 'Create Session'}
+                <Button 
+                  type="submit" 
+                  variant="gradient-primary" 
+                  className="flex-1"
+                  disabled={isSubmitting}
+                >
+                  {isSubmitting ? (
+                    <>
+                      <svg className="animate-spin -ml-1 mr-2 h-4 w-4 inline-block" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                      </svg>
+                      {editingSession ? 'Updating...' : 'Creating...'}
+                    </>
+                  ) : (
+                    editingSession ? 'Update Session' : 'Create Session'
+                  )}
                 </Button>
-                <Button type="button" variant="outline" onClick={handleCloseModal} className="flex-1">
+                <Button 
+                  type="button" 
+                  variant="outline" 
+                  onClick={handleCloseModal} 
+                  className="flex-1"
+                  disabled={isSubmitting}
+                >
                   Cancel
                 </Button>
               </div>
@@ -596,6 +652,27 @@ function AdminExamSessions() {
           </div>
         </div>
       )}
+
+      {/* Confirmation Modal */}
+      <ConfirmationModal
+        isOpen={confirmDialog.isOpen}
+        title={
+          confirmDialog.action === 'delete' 
+            ? 'Delete Exam Session' 
+            : 'Unlink Seating Plan'
+        }
+        message={
+          confirmDialog.action === 'delete'
+            ? 'This will permanently delete the exam session. This action cannot be undone.'
+            : 'Are you sure you want to unlink this seating plan from the session?'
+        }
+        confirmText={confirmDialog.action === 'delete' ? 'Delete' : 'Unlink'}
+        cancelText="Cancel"
+        onConfirm={handleConfirmAction}
+        onCancel={handleCancelAction}
+        isDangerous={confirmDialog.action === 'delete'}
+        isLoading={confirmDialog.isLoading}
+      />
     </div>
   );
 }
