@@ -8,6 +8,7 @@ import threading
 import time
 import logging
 import argparse
+import math
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
@@ -94,6 +95,42 @@ def _parse_camera_source(raw_value: str) -> int | str:
         return int(raw_value)
     except ValueError:
         return raw_value
+
+
+def _bbox_center(bbox: Sequence[float]) -> Tuple[float, float]:
+    x1, y1, x2, y2 = bbox
+    return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
+
+
+def _bbox_overlap(a: Sequence[float], b: Sequence[float], margin: float = 0.0) -> bool:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    return not (ax2 + margin < bx1 or bx2 + margin < ax1 or ay2 + margin < by1 or by2 + margin < ay1)
+
+
+def _expand_bbox(bbox: Sequence[float], frac: float) -> Tuple[float, float, float, float]:
+    x1, y1, x2, y2 = bbox
+    w = x2 - x1
+    h = y2 - y1
+    return (x1 - w * frac, y1 - h * frac, x2 + w * frac, y2 + h * frac)
+
+
+def _distance(a: Sequence[float], b: Sequence[float]) -> float:
+    return math.hypot(a[0] - b[0], a[1] - b[1])
+
+
+def _is_paper_moved_away(dx: float, dy: float) -> bool:
+    # Treat left/right movement as away from the front-facing work area,
+    # and backward movement as motion toward the top of the frame.
+    if abs(dx) >= abs(dy):
+        return True
+    return dy < 0 and abs(dy) > abs(dx)
+
+
+def _person_key(bbox: Sequence[float]) -> str:
+    cx, cy = _bbox_center(bbox)
+    return f"{int(cx // 50)}_{int(cy // 50)}"
+
 
 BASE_DIR = Path(__file__).resolve().parent
 SUSPICIOUS_DIR = BASE_DIR / "suspicious_alerts"
@@ -202,6 +239,9 @@ ALERT_COOLDOWN_SEC        = _env_float("ALERT_COOLDOWN_SEC", 5.0)
 PAPER_ALERT_COOLDOWN_SEC  = _env_float("PAPER_ALERT_COOLDOWN_SEC", 5.0)   
 WATCH_ALERT_COOLDOWN_SEC  = _env_float("WATCH_ALERT_COOLDOWN_SEC", 5.0)   
 HEAD_ALERT_COOLDOWN_SEC   = _env_float("HEAD_ALERT_COOLDOWN_SEC", 5.0)    
+PAPER_WORK_AREA_MARGIN_FRAC = _env_float("PAPER_WORK_AREA_MARGIN_FRAC", 0.25)
+PAPER_MOVEMENT_THRESHOLD_FRAC = _env_float("PAPER_MOVEMENT_THRESHOLD_FRAC", 0.30)
+PAPER_DISPLACEMENT_COOLDOWN_SEC = _env_float("PAPER_DISPLACEMENT_COOLDOWN_SEC", PAPER_ALERT_COOLDOWN_SEC)
 
 @dataclass
 class DetectionRule:
@@ -316,6 +356,7 @@ FRIENDLY_LABELS = {
     "PHONE_DETECTED": "Phone Detected",
     "WATCH_DETECTED": "Watch Detected",
     "PAPER_PASSING": "Paper Passing",
+    "PAPER_DISPLACEMENT": "Paper Displaced",
     "HEAD_LEFT": "Head Looking Left",
     "HEAD_RIGHT": "Head Looking Right",
     "HEAD_DOWN": "Head Down",
@@ -414,6 +455,7 @@ class ViolationTracker:
         self._per_type = per_type_cooldowns or {}
         self.counts = {
             "paper_swap": 0,
+            "paper_displacement": 0,
             "mobile": 0,
             "watch": 0,
             "head_turn": 0,
@@ -1054,6 +1096,7 @@ def main():
             "head_down":  HEAD_ALERT_COOLDOWN_SEC,   # 20 s
             "hand_gesture": HEAD_ALERT_COOLDOWN_SEC, # 20 s
             "paper_passing": PAPER_ALERT_COOLDOWN_SEC, # 15 s
+            "paper_displacement": PAPER_DISPLACEMENT_COOLDOWN_SEC
         }
     )
     
@@ -1075,6 +1118,7 @@ def main():
     last_detections: List[Dict] = []
     last_face_violations: List[Dict] = []
     last_face_overlay_data: List[Dict] = []
+    paper_anchor_by_person: Dict[str, Sequence[float]] = {}
 
     last_good_frame: Optional[np.ndarray] = None
 
@@ -1217,7 +1261,96 @@ def main():
                     emit_alert(alert_reason, bbox, violation["confidence"], 
                              (frame.shape[1], frame.shape[0]), snapshot_path, timestamp)
                     _beep("paper" if v_type == "paper_passing" else "generic")
-            
+
+            # Process paper movement away from the student's working area
+            person_boxes = [det["bbox"] for det in last_detections if det["category"] == "person"]
+            paper_detections = [det for det in last_detections if det["category"] == "paper"]
+
+            for paper_det in paper_detections:
+                paper_bbox = paper_det["bbox"]
+                paper_center = _bbox_center(paper_bbox)
+
+                nearest_person = None
+                nearest_dist = float("inf")
+                for person_bbox in person_boxes:
+                    dist = _distance(_bbox_center(person_bbox), paper_center)
+                    if dist < nearest_dist:
+                        nearest_dist = dist
+                        nearest_person = person_bbox
+
+                if nearest_person is None:
+                    continue
+
+                person_key = _person_key(nearest_person)
+                work_area = _expand_bbox(nearest_person, PAPER_WORK_AREA_MARGIN_FRAC)
+                baseline_bbox = paper_anchor_by_person.get(person_key)
+
+                if baseline_bbox is None and _bbox_overlap(paper_bbox, work_area):
+                    paper_anchor_by_person[person_key] = paper_bbox
+                    continue
+
+                if baseline_bbox is not None:
+                    baseline_center = _bbox_center(baseline_bbox)
+                    moved_dist = _distance(baseline_center, paper_center)
+                    threshold = max(nearest_person[2] - nearest_person[0], nearest_person[3] - nearest_person[1]) * PAPER_MOVEMENT_THRESHOLD_FRAC
+                    dx = paper_center[0] - baseline_center[0]
+                    dy = paper_center[1] - baseline_center[1]
+                    moved_away = _is_paper_moved_away(dx, dy)
+
+                    # Check if paper has moved beyond threshold in a directional way
+                    paper_moved_significantly = moved_dist > threshold and moved_away
+                    paper_left_work_area = not _bbox_overlap(paper_bbox, work_area)
+
+                    # --- Case 1: Paper passes (leaves work area completely) ---
+                    # This triggers when paper is no longer visible in the student's work zone
+                    if paper_left_work_area:
+                        if tracker.record("paper_swap"):
+                            timestamp = datetime.now()
+                            snapshot_path = save_evidence(
+                                frame,
+                                "PAPER_PASSING",
+                                timestamp,
+                                paper_bbox,
+                                paper_det.get("label", "paper"),
+                                paper_det.get("conf", 0.0),
+                            )
+                            emit_alert(
+                                "PAPER_PASSING",
+                                paper_bbox,
+                                paper_det.get("conf", 0.0),
+                                (frame.shape[1], frame.shape[0]),
+                                snapshot_path,
+                                timestamp,
+                            )
+                            _beep("paper")
+
+                    # --- Case 2: Paper displaced (moved far away but still in work area) ---
+                    # This triggers when paper moves left/right/backward but student remains seated
+                    elif paper_moved_significantly and _bbox_overlap(paper_bbox, work_area):
+                        if tracker.record("paper_displacement"):
+                            timestamp = datetime.now()
+                            snapshot_path = save_evidence(
+                                frame,
+                                "PAPER_DISPLACEMENT",
+                                timestamp,
+                                paper_bbox,
+                                paper_det.get("label", "paper"),
+                                paper_det.get("conf", 0.0),
+                            )
+                            emit_alert(
+                                "PAPER_DISPLACEMENT",
+                                paper_bbox,
+                                paper_det.get("conf", 0.0),
+                                (frame.shape[1], frame.shape[0]),
+                                snapshot_path,
+                                timestamp,
+                            )
+                            _beep("paper")
+
+                    # Update anchor when paper settles back into the work area after displacement
+                    if _bbox_overlap(paper_bbox, work_area) and moved_dist <= threshold:
+                        paper_anchor_by_person[person_key] = paper_bbox
+
             # Draw YOLO detections for objects only (phones, watches, papers)
             for detection in last_detections:
                 x1, y1, x2, y2 = map(int, detection["bbox"])
