@@ -1316,7 +1316,7 @@ def main():
                             )
                             emit_alert(
                                 "PAPER_PASSING",
-                                paper_bbox,
+                                nearest_person,
                                 paper_det.get("conf", 0.0),
                                 (frame.shape[1], frame.shape[0]),
                                 snapshot_path,
@@ -1339,7 +1339,7 @@ def main():
                             )
                             emit_alert(
                                 "PAPER_DISPLACEMENT",
-                                paper_bbox,
+                                nearest_person,
                                 paper_det.get("conf", 0.0),
                                 (frame.shape[1], frame.shape[0]),
                                 snapshot_path,
