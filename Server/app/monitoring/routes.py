@@ -31,6 +31,10 @@ HAND_GESTURE_WINDOW_SECONDS = 60
 HAND_GESTURE_ESCALATION_THRESHOLD = 3
 student_hand_gesture_tracker = {}  
 
+PAPER_DISPLACEMENT_WINDOW_SECONDS = 60
+PAPER_DISPLACEMENT_ESCALATION_THRESHOLD = 3
+student_paper_displacement_tracker = {}
+
 EMAIL_ALERT_COOLDOWN_SECONDS = 20
 last_email_sent_at = {}
 
@@ -42,7 +46,7 @@ _last_confirmed_student = {}
 _LAST_CONFIRMED_TTL = 30.0     
 
 
-def _send_alert_email_async(app_obj, exam_session_id, reason, timestamp, filename, student_name, roll_number, seat_number, head_turn_escalated, head_turn_count, window_seconds):
+def _send_alert_email_async(app_obj, exam_session_id, reason, timestamp, filename, student_name, roll_number, seat_number, behaviour_escalated, escalation_count, window_seconds, escalation_label=''):
     
     try:
         with app_obj.app_context():
@@ -89,12 +93,12 @@ def _send_alert_email_async(app_obj, exam_session_id, reason, timestamp, filenam
 
             from app.utils.helpers import send_email_alert
             plain_body = f"Level 2 Warning: {reason} detected at {timestamp}."
-            if head_turn_escalated and student_name:
+            if behaviour_escalated and student_name:
                 plain_body = (
                     f"Level 2 Warning: {student_name} (Roll: {roll_number}, Seat: {seat_number}) "
-                    f"has turned their head {head_turn_count} times in the last {window_seconds} seconds."
+                    f"has {escalation_count} {escalation_label} in the last {window_seconds} seconds."
                 )
-            if student_name and not head_turn_escalated:
+            if student_name and not behaviour_escalated:
                 plain_body += f"\nStudent: {student_name} (Roll: {roll_number}, Seat: {seat_number})"
             if evidence_abs_path:
                 plain_body += f"\nEvidence image attached."
@@ -462,6 +466,7 @@ def process_monitor_output(process, socketio_instance, app):
                     object_types = ['PHONE_DETECTED', 'WATCH_DETECTED', 'PAPER_PASSING']
                     head_turn_types = ['HEAD_LEFT', 'HEAD_RIGHT']
                     hand_gesture_types = ['HAND_GESTURE']
+                    paper_displacement_types = ['PAPER_DISPLACEMENT']
                     behaviour_escalated = False
                     escalation_count = 0
                     escalation_window = 0
@@ -470,6 +475,9 @@ def process_monitor_output(process, socketio_instance, app):
                     if reason in object_types:
                         warning_level = 2
                         send_email = True
+                    elif reason in paper_displacement_types:
+                        warning_level = 1
+                        send_email = False
                     else:
                         warning_level = 1
                         send_email = False
@@ -530,6 +538,34 @@ def process_monitor_output(process, socketio_instance, app):
                                 f"{gesture_count} gestures in last {HAND_GESTURE_WINDOW_SECONDS}s"
                             )
 
+                    if reason in paper_displacement_types and student_info:
+                        student_key = roll_number or seat_number or student_name
+                        now_ts = time.time()
+
+                        if student_key not in student_paper_displacement_tracker:
+                            student_paper_displacement_tracker[student_key] = []
+                        student_paper_displacement_tracker[student_key].append(now_ts)
+
+                        cutoff = now_ts - PAPER_DISPLACEMENT_WINDOW_SECONDS
+                        student_paper_displacement_tracker[student_key] = [
+                            t for t in student_paper_displacement_tracker[student_key] if t >= cutoff
+                        ]
+
+                        displacement_count = len(student_paper_displacement_tracker[student_key])
+
+                        if displacement_count >= PAPER_DISPLACEMENT_ESCALATION_THRESHOLD:
+                            warning_level = 2
+                            send_email = True
+                            behaviour_escalated = True
+                            escalation_count = displacement_count
+                            escalation_window = PAPER_DISPLACEMENT_WINDOW_SECONDS
+                            escalation_label = 'paper displacements'
+                            print(
+                                f"[Monitor] Paper-displacement ESCALATED to Level 2 for "
+                                f"{student_name} ({roll_number}) — "
+                                f"{displacement_count} displacements in last {PAPER_DISPLACEMENT_WINDOW_SECONDS}s"
+                            )
+
                     description = f"Auto-detected: {reason}"
                     if student_info:
                         description = f"{reason} — {student_name} (Roll: {roll_number}, Seat: {seat_number})"
@@ -583,6 +619,7 @@ def process_monitor_output(process, socketio_instance, app):
                                         behaviour_escalated,
                                         escalation_count,
                                         escalation_window or HEAD_TURN_WINDOW_SECONDS,
+                                        escalation_label,
                                     ),
                                     daemon=True,
                                 ).start()
