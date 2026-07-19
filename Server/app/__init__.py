@@ -24,15 +24,27 @@ def create_app(config_name='default'):
     jwt.init_app(app)
     bcrypt.init_app(app)
     socketio.init_app(app)
-    CORS(app, origins=[
-        app.config['FRONTEND_URL'],
+    
+    # CORS Configuration - Allow frontend domains
+    allowed_origins = [
+        'https://secure-exam-ruddy.vercel.app',  # Vercel production
+        app.config['FRONTEND_URL'],  # From env variable
         'http://127.0.0.1:5173',
         'http://localhost:5173',
         'http://localhost:3000',
         'http://127.0.0.1:3000',
         'http://localhost:3001',
         'http://127.0.0.1:3001'
-    ])
+    ]
+    
+    CORS(app, 
+         origins=allowed_origins,
+         supports_credentials=True,
+         allow_headers=['Content-Type', 'Authorization'],
+         methods=['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS']
+    )
+    
+    print(f"✅ CORS enabled for: {allowed_origins}")
 
     # Initialize MongoDB connection
     if not app.config['MONGODB_URI']:

@@ -120,6 +120,8 @@ def _distance(a: Sequence[float], b: Sequence[float]) -> float:
 
 
 def _is_paper_moved_away(dx: float, dy: float) -> bool:
+    # Treat left/right movement as away from the front-facing work area,
+    # and backward movement as motion toward the top of the frame.
     if abs(dx) >= abs(dy):
         return True
     return dy < 0 and abs(dy) > abs(dx)
@@ -1100,14 +1102,14 @@ def main():
     tracker = ViolationTracker(
         cooldown=ALERT_COOLDOWN_SEC,
         per_type_cooldowns={
-            "mobile":     ALERT_COOLDOWN_SEC,       
-            "watch":      WATCH_ALERT_COOLDOWN_SEC,  
-            "paper":      PAPER_ALERT_COOLDOWN_SEC,  
-            "paper_swap": PAPER_ALERT_COOLDOWN_SEC,  
-            "head_turn":  HEAD_ALERT_COOLDOWN_SEC,   
-            "head_down":  HEAD_ALERT_COOLDOWN_SEC,  
-            "hand_gesture": HEAD_ALERT_COOLDOWN_SEC, 
-            "paper_passing": PAPER_ALERT_COOLDOWN_SEC, 
+            "mobile":     ALERT_COOLDOWN_SEC,       # 30 s
+            "watch":      WATCH_ALERT_COOLDOWN_SEC,  # 30 s
+            "paper":      PAPER_ALERT_COOLDOWN_SEC,  # 45 s
+            "paper_swap": PAPER_ALERT_COOLDOWN_SEC,  # 45 s
+            "head_turn":  HEAD_ALERT_COOLDOWN_SEC,   # 20 s
+            "head_down":  HEAD_ALERT_COOLDOWN_SEC,   # 20 s
+            "hand_gesture": HEAD_ALERT_COOLDOWN_SEC, # 20 s
+            "paper_passing": PAPER_ALERT_COOLDOWN_SEC, # 15 s
             "paper_displacement": PAPER_DISPLACEMENT_COOLDOWN_SEC
         }
     )
@@ -1346,7 +1348,7 @@ def main():
                             )
                             _beep("paper")
 
-                    #  Case 2: Paper displaced (moved far away but still in work area) 
+                    # --- Case 2: Paper displaced (moved far away but still in work area) ---
                     # This triggers when paper moves left/right/backward but student remains seated
                     elif paper_moved_significantly and _bbox_overlap(paper_bbox, work_area):
                         if tracker.record("paper_displacement"):
@@ -1361,7 +1363,11 @@ def main():
                             )
                             emit_alert(
                                 "PAPER_DISPLACEMENT",
+
                                 paper_bbox,
+
+                                nearest_person,
+
                                 paper_det.get("conf", 0.0),
                                 (frame.shape[1], frame.shape[0]),
                                 snapshot_path,
@@ -1369,8 +1375,16 @@ def main():
                             )
                             _beep("paper")
 
+
                     if _bbox_overlap(paper_bbox, work_area) and moved_dist <= threshold:
                         paper_anchor_by_person[person_key] = paper_bbox
+
+
+                    # Update anchor when paper settles back into the work area after displacement
+                    if _bbox_overlap(paper_bbox, work_area) and moved_dist <= threshold:
+                        paper_anchor_by_person[person_key] = paper_bbox
+
+            # Draw YOLO detections for objects only (phones, watches, papers)
 
             for detection in last_detections:
                 x1, y1, x2, y2 = map(int, detection["bbox"])
