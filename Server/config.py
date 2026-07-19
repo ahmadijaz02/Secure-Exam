@@ -22,11 +22,6 @@ class Config:
     SMTP_USERNAME = os.environ.get('SMTP_USERNAME')
     SMTP_PASSWORD = os.environ.get('SMTP_PASSWORD')
 
-    # Cloudinary configuration
-    CLOUDINARY_CLOUD_NAME = os.environ.get('CLOUDINARY_CLOUD_NAME')
-    CLOUDINARY_API_KEY = os.environ.get('CLOUDINARY_API_KEY')
-    CLOUDINARY_API_SECRET = os.environ.get('CLOUDINARY_API_SECRET')
-
     # Application URLs
     FRONTEND_URL = os.environ.get('FRONTEND_URL') or 'http://localhost:3000'
     BACKEND_URL = os.environ.get('BACKEND_URL') or 'http://localhost:5000'

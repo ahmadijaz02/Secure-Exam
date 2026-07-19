@@ -27,7 +27,7 @@ def seed_admin():
         # Check if admin already exists
         existing_admin = user_model.collection.find_one({'role': 'admin'})
         if existing_admin:
-            print(f"✅ Admin user already exists: {existing_admin['email']}")
+            print(f" Admin user already exists: {existing_admin['email']}")
             print("No action needed.")
             return
         
@@ -47,7 +47,7 @@ def seed_admin():
                 # Check if email already exists
                 existing_user = user_model.find_by_email(email)
                 if existing_user:
-                    print(f"❌ Email {email} already exists!")
+                    print(f" Email {email} already exists!")
                     continue
                 break
             print("Please enter a valid email address!")
@@ -59,9 +59,9 @@ def seed_admin():
                 if password == confirm_password:
                     break
                 else:
-                    print("❌ Passwords do not match!")
+                    print(" Passwords do not match!")
             else:
-                print("❌ Password must be at least 6 characters long!")
+                print(" Password must be at least 6 characters long!")
         
         try:
             # Create admin user
@@ -73,16 +73,16 @@ def seed_admin():
             )
             
             print()
-            print("✅ Admin user created successfully!")
+            print(" Admin user created successfully!")
             print(f"   Name: {admin_user['name']}")
             print(f"   Email: {admin_user['email']}")
             print(f"   Role: {admin_user['role']}")
             print(f"   ID: {admin_user['id']}")
             print()
-            print("🎯 Admin can now login to the system!")
+            print(" Admin can now login to the system!")
             
         except Exception as e:
-            print(f"❌ Error creating admin user: {e}")
+            print(f" Error creating admin user: {e}")
             return False
         
         return True
@@ -100,7 +100,7 @@ def create_default_admin():
         # Check if admin already exists
         existing_admin = user_model.collection.find_one({'role': 'admin'})
         if existing_admin:
-            print(f"✅ Admin user already exists: {existing_admin['email']}")
+            print(f" Admin user already exists: {existing_admin['email']}")
             return
         
         # Default admin credentials
@@ -119,15 +119,15 @@ def create_default_admin():
                 role=default_admin['role']
             )
             
-            print("✅ Default admin user created successfully!")
+            print("Default admin user created successfully!")
             print(f"   Email: {default_admin['email']}")
             print(f"   Password: {default_admin['password']}")
             print(f"   Name: {default_admin['name']}")
             print()
-            print("⚠️  IMPORTANT: Change the default password after first login!")
+            print("  IMPORTANT: Change the default password after first login!")
             
         except Exception as e:
-            print(f"❌ Error creating default admin: {e}")
+            print(f"Error creating default admin: {e}")
 
 def main():
     """Main function"""

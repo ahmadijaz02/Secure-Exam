@@ -8,6 +8,7 @@ import threading
 import time
 import logging
 import argparse
+import math
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
@@ -95,6 +96,40 @@ def _parse_camera_source(raw_value: str) -> int | str:
     except ValueError:
         return raw_value
 
+
+def _bbox_center(bbox: Sequence[float]) -> Tuple[float, float]:
+    x1, y1, x2, y2 = bbox
+    return ((x1 + x2) / 2.0, (y1 + y2) / 2.0)
+
+
+def _bbox_overlap(a: Sequence[float], b: Sequence[float], margin: float = 0.0) -> bool:
+    ax1, ay1, ax2, ay2 = a
+    bx1, by1, bx2, by2 = b
+    return not (ax2 + margin < bx1 or bx2 + margin < ax1 or ay2 + margin < by1 or by2 + margin < ay1)
+
+
+def _expand_bbox(bbox: Sequence[float], frac: float) -> Tuple[float, float, float, float]:
+    x1, y1, x2, y2 = bbox
+    w = x2 - x1
+    h = y2 - y1
+    return (x1 - w * frac, y1 - h * frac, x2 + w * frac, y2 + h * frac)
+
+
+def _distance(a: Sequence[float], b: Sequence[float]) -> float:
+    return math.hypot(a[0] - b[0], a[1] - b[1])
+
+
+def _is_paper_moved_away(dx: float, dy: float) -> bool:
+    if abs(dx) >= abs(dy):
+        return True
+    return dy < 0 and abs(dy) > abs(dx)
+
+
+def _person_key(bbox: Sequence[float]) -> str:
+    cx, cy = _bbox_center(bbox)
+    return f"{int(cx // 50)}_{int(cy // 50)}"
+
+
 BASE_DIR = Path(__file__).resolve().parent
 SUSPICIOUS_DIR = BASE_DIR / "suspicious_alerts"
 SUSPICIOUS_DIR.mkdir(parents=True, exist_ok=True)
@@ -123,6 +158,16 @@ _install_signal_handlers()
 CAMERA_MODE = os.environ.get("MONITOR_CAMERA_MODE", "external").strip().lower() or "external"
 CAMERA_SOURCE = _parse_camera_source(_profiled_env("MONITOR_CAMERA_SOURCE", "0"))
 CAMERA_BACKEND = (_profiled_env("MONITOR_CAMERA_BACKEND", "auto") or "auto").strip().lower()
+
+_back_source_raw = os.environ.get("BACK_CAMERA_SOURCE", "").strip()
+BACK_CAMERA_SOURCE = _parse_camera_source(_back_source_raw) if _back_source_raw else None
+_front_source_raw = os.environ.get("FRONT_CAMERA_SOURCE", "").strip()
+FRONT_CAMERA_SOURCE = (
+    _parse_camera_source(_front_source_raw)
+    if _front_source_raw
+    else CAMERA_SOURCE
+)
+DUAL_CAMERA_MODE = BACK_CAMERA_SOURCE is not None
 CAMERA_WARMUP_FRAMES = _env_int_profiled("CAMERA_WARMUP_FRAMES", 2)
 CAMERA_WARMUP_DELAY_SEC = _env_float_profiled("CAMERA_WARMUP_DELAY_SEC", 0.02)
 POST_CAMERA_INIT_DELAY_SEC = _env_float_profiled("POST_CAMERA_INIT_DELAY_SEC", 0.2)
@@ -164,17 +209,11 @@ YOLO_CLASSES = [cls.strip() for cls in os.environ.get(
 ).split(",") if cls.strip()]
 
 EXTENDED_YOLO_CLASSES = [
-    # People / body parts for top-view tracking and crop extraction
     "head", "face", "person",
-    # Benign digital devices to reduce phone false positives
     "laptop", "notebook computer", "tablet", "ipad",
-    # Mobile phones - clear identifiers
     "mobile phone", "cell phone", "cellphone", "smartphone", "phone", "mobile", "mobile device",
-    # Phone locations indicating active cheating/hiding
     "phone in hand", "cell phone in hand", "phone between legs", "phone in lap", "phone on lap",
-    # Watches
     "wristwatch", "smartwatch", "analog watch",
-    # Papers and notebooks for cheating
     "paper", "sheet of paper", "notebook", "cheat sheet", "document", "textbook", "printed paper", "book",
 ]
 
@@ -202,6 +241,9 @@ ALERT_COOLDOWN_SEC        = _env_float("ALERT_COOLDOWN_SEC", 5.0)
 PAPER_ALERT_COOLDOWN_SEC  = _env_float("PAPER_ALERT_COOLDOWN_SEC", 5.0)   
 WATCH_ALERT_COOLDOWN_SEC  = _env_float("WATCH_ALERT_COOLDOWN_SEC", 5.0)   
 HEAD_ALERT_COOLDOWN_SEC   = _env_float("HEAD_ALERT_COOLDOWN_SEC", 5.0)    
+PAPER_WORK_AREA_MARGIN_FRAC = _env_float("PAPER_WORK_AREA_MARGIN_FRAC", 0.25)
+PAPER_MOVEMENT_THRESHOLD_FRAC = _env_float("PAPER_MOVEMENT_THRESHOLD_FRAC", 0.30)
+PAPER_DISPLACEMENT_COOLDOWN_SEC = _env_float("PAPER_DISPLACEMENT_COOLDOWN_SEC", PAPER_ALERT_COOLDOWN_SEC)
 
 @dataclass
 class DetectionRule:
@@ -217,14 +259,14 @@ DETECTION_RULES: Dict[str, DetectionRule] = {
         min_conf=max(GENERAL_DISPLAY_CONF, PHONE_CLASS_MIN_CONF),
         min_area_fraction=0.00004,
         max_area_fraction=0.30,
-        cooldown=ALERT_COOLDOWN_SEC,          # 30 s
+        cooldown=ALERT_COOLDOWN_SEC,          
     ),
     "watch": DetectionRule(
         reason="WATCH_DETECTED",
         min_conf=max(GENERAL_DISPLAY_CONF, WATCH_CLASS_MIN_CONF),
         min_area_fraction=0.00004,
         max_area_fraction=0.30,
-        cooldown=WATCH_ALERT_COOLDOWN_SEC,    # 30 s
+        cooldown=WATCH_ALERT_COOLDOWN_SEC,    
     ),
     "paper": DetectionRule(
         reason="PAPER_PASSING",
@@ -280,7 +322,11 @@ def encode_frame_for_stream(frame: np.ndarray) -> Optional[str]:
         return None
     return base64.b64encode(buffer.tobytes()).decode("ascii")
 
-def emit_frame(frame: np.ndarray, throttle_state: Dict[str, float]) -> None:
+def emit_frame(
+    frame: np.ndarray,
+    throttle_state: Dict[str, float],
+    stream_id: str = "front",
+) -> None:
     now = time.time()
     min_interval = 1.0 / STREAM_TARGET_FPS
     last_emit = throttle_state.get("last_emit", 0.0)
@@ -289,7 +335,7 @@ def emit_frame(frame: np.ndarray, throttle_state: Dict[str, float]) -> None:
     frame_payload = encode_frame_for_stream(frame)
     if not frame_payload:
         return
-    print(f"FRAME:{frame_payload}", flush=True)
+    print(f"FRAME:{stream_id}:{frame_payload}", flush=True)
     throttle_state["last_emit"] = now
 
 def emit_alert(reason: str, bbox: Tuple[float, float, float, float],
@@ -316,6 +362,7 @@ FRIENDLY_LABELS = {
     "PHONE_DETECTED": "Phone Detected",
     "WATCH_DETECTED": "Watch Detected",
     "PAPER_PASSING": "Paper Passing",
+    "PAPER_DISPLACEMENT": "Paper Displaced",
     "HEAD_LEFT": "Head Looking Left",
     "HEAD_RIGHT": "Head Looking Right",
     "HEAD_DOWN": "Head Down",
@@ -414,6 +461,7 @@ class ViolationTracker:
         self._per_type = per_type_cooldowns or {}
         self.counts = {
             "paper_swap": 0,
+            "paper_displacement": 0,
             "mobile": 0,
             "watch": 0,
             "head_turn": 0,
@@ -444,8 +492,8 @@ class NormalizedPoint:
 class FaceMovementDetector:
     def __init__(self):
 
-        self.YAW_THRESHOLD = 22   # degrees — was 70 (unreachable), now 22 for natural side-glances
-        self.PITCH_DOWN_THRESH = -8   # degrees — slightly more sensitive than before
+        self.YAW_THRESHOLD = 22   
+        self.PITCH_DOWN_THRESH = -8   
 
         self.YAW_THRESHOLD = 70  
         self.PITCH_DOWN_THRESH = -10  
@@ -704,13 +752,10 @@ class FaceMovementDetector:
 
                 for flag in active_flags:
                     if flag == "head_turn":
-                        # yaw > 0 means left_eye farther from nose than right_eye
-                        # → face rotated RIGHT from camera's perspective
-                        # yaw < 0 → face rotated LEFT from camera's perspective
                         direction = "RIGHT" if yaw > 0 else "LEFT"
                         violations.append({
                             "type": "head_turn",
-                            "direction": direction,           # explicit field — don't rely on string parse
+                            "direction": direction,         
                             "description": f"Head turned {direction} (yaw={yaw:.1f}°)",
                             "student_id": student_id,
                             "confidence": student["risk_score"] / 100.0,
@@ -803,7 +848,6 @@ class FaceMovementDetector:
                          (int(ax+t2*(bx-ax)), int(ay+t2*(by-ay))),
                          color, thickness)
 
-# YOLO Detector
 
 class YOLODetector:
     HEAD_CLASSES = {"head", "face", "human head", "human face"}
@@ -827,19 +871,24 @@ class YOLODetector:
         resolved_path = Path(model_path)
         if not resolved_path.is_absolute():
             resolved_path = BASE_DIR / resolved_path
-        fallback_path = BASE_DIR / "yolov8s-worldv2.pt"
-        if not resolved_path.exists():
-            if fallback_path.exists() and resolved_path != fallback_path:
-                log(f"Requested YOLO model '{resolved_path.name}' not found. Falling back to '{fallback_path.name}'.")
-                resolved_path = fallback_path
-            else:
-                raise FileNotFoundError(f"YOLO model not found: {resolved_path}")
-        self.model_path = str(resolved_path)
+        fallback_name = "best_s_v2.pt"
+        fallback_path = BASE_DIR / fallback_name
+
+        if resolved_path.exists():
+            load_target = str(resolved_path)
+        elif fallback_path.exists() and resolved_path != fallback_path:
+            log(f"Requested YOLO model '{resolved_path.name}' not found. Falling back to '{fallback_path.name}'.")
+            load_target = str(fallback_path)
+        else:
+            log(f"Local model '{resolved_path.name}' not found. Loading '{fallback_name}' (auto-download if needed).")
+            load_target = fallback_name
+
+        self.model_path = load_target
         self.prompts = [p.strip() for p in prompts if p.strip()]
         self.device = YOLO_DEVICE_PREF or "cpu"
-        
+
         log(f"Loading YOLO model: {self.model_path} (device={self.device})")
-        self.model = YOLO(self.model_path)
+        self.model = YOLO(load_target, verbose=False)
         if hasattr(self.model, "set_classes"):
             self.model.set_classes(self.prompts)
         else:
@@ -937,7 +986,7 @@ def _build_rtsp_cap(source) -> Optional[cv2.VideoCapture]:
         ffmpeg_opts = "|".join([
             f"rtsp_transport;{RTSP_TRANSPORT}",
             "fflags;nobuffer",
-            "analyzeduration;1000000",   # 1s (ensures high-res SPS/PPS are found)
+            "analyzeduration;1000000",   # 1s 
             "probesize;5000000",         # 5 MB
             f"stimeout;{RTSP_READ_TIMEOUT_MS * 1000}",  # microseconds
         ])
@@ -1041,19 +1090,25 @@ def open_capture() -> Optional[RTSPCapture]:
 
 
 def main():
+    if DUAL_CAMERA_MODE:
+        log(f"Dual camera mode enabled — front={FRONT_CAMERA_SOURCE}, back={BACK_CAMERA_SOURCE}")
+    else:
+        log(f"Single camera mode — source={CAMERA_SOURCE}")
+
     log("Starting integrated exam monitoring system...")
     
     tracker = ViolationTracker(
         cooldown=ALERT_COOLDOWN_SEC,
         per_type_cooldowns={
-            "mobile":     ALERT_COOLDOWN_SEC,       # 30 s
-            "watch":      WATCH_ALERT_COOLDOWN_SEC,  # 30 s
-            "paper":      PAPER_ALERT_COOLDOWN_SEC,  # 45 s
-            "paper_swap": PAPER_ALERT_COOLDOWN_SEC,  # 45 s
-            "head_turn":  HEAD_ALERT_COOLDOWN_SEC,   # 20 s
-            "head_down":  HEAD_ALERT_COOLDOWN_SEC,   # 20 s
-            "hand_gesture": HEAD_ALERT_COOLDOWN_SEC, # 20 s
-            "paper_passing": PAPER_ALERT_COOLDOWN_SEC, # 15 s
+            "mobile":     ALERT_COOLDOWN_SEC,       
+            "watch":      WATCH_ALERT_COOLDOWN_SEC,  
+            "paper":      PAPER_ALERT_COOLDOWN_SEC,  
+            "paper_swap": PAPER_ALERT_COOLDOWN_SEC,  
+            "head_turn":  HEAD_ALERT_COOLDOWN_SEC,   
+            "head_down":  HEAD_ALERT_COOLDOWN_SEC,  
+            "hand_gesture": HEAD_ALERT_COOLDOWN_SEC, 
+            "paper_passing": PAPER_ALERT_COOLDOWN_SEC, 
+            "paper_displacement": PAPER_DISPLACEMENT_COOLDOWN_SEC
         }
     )
     
@@ -1063,7 +1118,14 @@ def main():
     
     hand_detector = HandGestureDetector(process_every=6)
     
-    cap = open_capture()
+    if DUAL_CAMERA_MODE:
+        log(f"Opening front camera: {FRONT_CAMERA_SOURCE}")
+        cap = RTSPCapture(FRONT_CAMERA_SOURCE)
+        log(f"Opening back camera: {BACK_CAMERA_SOURCE}")
+        back_cap: Optional[RTSPCapture] = RTSPCapture(BACK_CAMERA_SOURCE)
+    else:
+        cap = open_capture()
+        back_cap = None
     if cap is None:
         log("Failed to open camera")
         return
@@ -1075,6 +1137,7 @@ def main():
     last_detections: List[Dict] = []
     last_face_violations: List[Dict] = []
     last_face_overlay_data: List[Dict] = []
+    paper_anchor_by_person: Dict[str, Sequence[float]] = {}
 
     last_good_frame: Optional[np.ndarray] = None
 
@@ -1102,6 +1165,7 @@ def main():
     yolo_thread = threading.Thread(target=yolo_worker, daemon=True)
     yolo_thread.start()
     frame_throttle_state: Dict[str, float] = {}
+    back_throttle_state: Dict[str, float] = {}
     fps = 0.0
     prev_time = time.time()
     _empty_streak = 0
@@ -1110,6 +1174,13 @@ def main():
 
     try:
         while not stop_event.is_set():
+            if back_cap is not None:
+                ret_back, back_frame = back_cap.read()
+                if ret_back and back_frame is not None:
+                    if FORCE_PROCESS_RESIZE:
+                        back_frame = cv2.resize(back_frame, (PROCESS_WIDTH, PROCESS_HEIGHT))
+                    emit_frame(back_frame, back_throttle_state, "back")
+
             ret, frame = cap.read()
 
             if not ret or frame is None:
@@ -1117,7 +1188,7 @@ def main():
                 if _empty_streak >= _EMPTY_STREAK_THRESH:
                     time.sleep(_MAX_EMPTY_STREAK_SLEEP)
                 if last_good_frame is not None:
-                    emit_frame(last_good_frame, frame_throttle_state)
+                    emit_frame(last_good_frame, frame_throttle_state, "front")
                 continue
 
             _empty_streak = 0
@@ -1129,7 +1200,6 @@ def main():
             if ENABLE_CLAHE:
                 frame = apply_clahe(frame)
             
-            # Calculate FPS
             now = time.time()
             dt = now - prev_time
             if dt > 0:
@@ -1151,10 +1221,8 @@ def main():
             last_face_violations = face_violations
             last_face_overlay_data = face_overlay_data
             
-            # Hand Gesture Detection
             hand_violations, hand_overlay_data = hand_detector.detect(frame, frame_idx, last_detections)
             
-            # Process YOLO detections for alerts
             for detection in last_detections:
                 category = detection["category"]
                 if category == "laptop" or category == "paper":
@@ -1166,7 +1234,6 @@ def main():
                     
                     if conf >= rule.min_conf:
                         if tracker.record(category):
-                            # Save evidence and emit alert
                             timestamp = datetime.now()
                             snapshot_path = save_evidence(
                                 frame, rule.reason, timestamp, bbox, 
@@ -1181,7 +1248,6 @@ def main():
             for violation in last_face_violations:
                 violation_type = violation["type"]
                 if violation_type == "head_turn":
-                    # Use the explicit 'direction' field; fall back to description parse as safety net
                     direction = violation.get("direction") or (
                         "LEFT" if "LEFT" in violation.get("description", "") else "RIGHT"
                     )
@@ -1217,14 +1283,100 @@ def main():
                     emit_alert(alert_reason, bbox, violation["confidence"], 
                              (frame.shape[1], frame.shape[0]), snapshot_path, timestamp)
                     _beep("paper" if v_type == "paper_passing" else "generic")
-            
-            # Draw YOLO detections for objects only (phones, watches, papers)
+
+            # Process paper movement away from the student's working area
+            person_boxes = [det["bbox"] for det in last_detections if det["category"] == "person"]
+            paper_detections = [det for det in last_detections if det["category"] == "paper"]
+
+            for paper_det in paper_detections:
+                paper_bbox = paper_det["bbox"]
+                paper_center = _bbox_center(paper_bbox)
+
+                nearest_person = None
+                nearest_dist = float("inf")
+                for person_bbox in person_boxes:
+                    dist = _distance(_bbox_center(person_bbox), paper_center)
+                    if dist < nearest_dist:
+                        nearest_dist = dist
+                        nearest_person = person_bbox
+
+                if nearest_person is None:
+                    continue
+
+                person_key = _person_key(nearest_person)
+                work_area = _expand_bbox(nearest_person, PAPER_WORK_AREA_MARGIN_FRAC)
+                baseline_bbox = paper_anchor_by_person.get(person_key)
+
+                if baseline_bbox is None and _bbox_overlap(paper_bbox, work_area):
+                    paper_anchor_by_person[person_key] = paper_bbox
+                    continue
+
+                if baseline_bbox is not None:
+                    baseline_center = _bbox_center(baseline_bbox)
+                    moved_dist = _distance(baseline_center, paper_center)
+                    threshold = max(nearest_person[2] - nearest_person[0], nearest_person[3] - nearest_person[1]) * PAPER_MOVEMENT_THRESHOLD_FRAC
+                    dx = paper_center[0] - baseline_center[0]
+                    dy = paper_center[1] - baseline_center[1]
+                    moved_away = _is_paper_moved_away(dx, dy)
+
+                    # Check if paper has moved beyond threshold in a directional way
+                    paper_moved_significantly = moved_dist > threshold and moved_away
+                    paper_left_work_area = not _bbox_overlap(paper_bbox, work_area)
+
+                    # --- Case 1: Paper passes (leaves work area completely) ---
+                    # This triggers when paper is no longer visible in the student's work zone
+                    if paper_left_work_area:
+                        if tracker.record("paper_swap"):
+                            timestamp = datetime.now()
+                            snapshot_path = save_evidence(
+                                frame,
+                                "PAPER_PASSING",
+                                timestamp,
+                                paper_bbox,
+                                paper_det.get("label", "paper"),
+                                paper_det.get("conf", 0.0),
+                            )
+                            emit_alert(
+                                "PAPER_PASSING",
+                                paper_bbox,
+                                paper_det.get("conf", 0.0),
+                                (frame.shape[1], frame.shape[0]),
+                                snapshot_path,
+                                timestamp,
+                            )
+                            _beep("paper")
+
+                    #  Case 2: Paper displaced (moved far away but still in work area) 
+                    # This triggers when paper moves left/right/backward but student remains seated
+                    elif paper_moved_significantly and _bbox_overlap(paper_bbox, work_area):
+                        if tracker.record("paper_displacement"):
+                            timestamp = datetime.now()
+                            snapshot_path = save_evidence(
+                                frame,
+                                "PAPER_DISPLACEMENT",
+                                timestamp,
+                                paper_bbox,
+                                paper_det.get("label", "paper"),
+                                paper_det.get("conf", 0.0),
+                            )
+                            emit_alert(
+                                "PAPER_DISPLACEMENT",
+                                paper_bbox,
+                                paper_det.get("conf", 0.0),
+                                (frame.shape[1], frame.shape[0]),
+                                snapshot_path,
+                                timestamp,
+                            )
+                            _beep("paper")
+
+                    if _bbox_overlap(paper_bbox, work_area) and moved_dist <= threshold:
+                        paper_anchor_by_person[person_key] = paper_bbox
+
             for detection in last_detections:
                 x1, y1, x2, y2 = map(int, detection["bbox"])
                 conf = detection["conf"]
                 category = detection["category"]
 
-                # Ignore laptop completely.
                 if category == "laptop":
                     continue
                 
@@ -1256,7 +1408,7 @@ def main():
             face_detector.draw_overlay(frame, face_overlay_data)
             hand_detector.draw_overlay(frame, hand_overlay_data)
             
-            emit_frame(frame, frame_throttle_state)
+            emit_frame(frame, frame_throttle_state, "front")
             
     except KeyboardInterrupt:
         log("Monitoring interrupted by user")
@@ -1266,6 +1418,8 @@ def main():
         yolo_running = False
         if cap:
             cap.release()
+        if back_cap is not None:
+            back_cap.release()
         log("Monitoring stopped")
 
 if __name__ == "__main__":

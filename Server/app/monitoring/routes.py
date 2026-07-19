@@ -320,8 +320,8 @@ def resolve_student_from_detection(app, exam_session_id, norm_x, norm_y,
 
 def process_monitor_output(process, socketio_instance, app):
     global monitoring_active
-    frame_count = 0
-    last_frame_emit_ts = 0.0
+    frame_count = {"front": 0, "back": 0}
+    last_frame_emit_ts = {"front": 0.0, "back": 0.0}
     try:
         with app.app_context():
             while monitoring_active and process.poll() is None:
@@ -333,31 +333,54 @@ def process_monitor_output(process, socketio_instance, app):
                 if not line:
                     continue
 
+                # Handle dual camera frames: FRAME:front:<base64> or FRAME:back:<base64>
                 if line.startswith('FRAME:'):
-                    frame_data = line[6:]
+                    frame_parts = line[6:].split(':', 1)  # Split on first colon only
+                    if len(frame_parts) == 2:
+                        stream_id = frame_parts[0]  # "front" or "back"
+                        frame_data = frame_parts[1]
+                    else:
+                        # Legacy format without stream_id, assume front
+                        stream_id = "front"
+                        frame_data = frame_parts[0]
+                    
                     if not frame_data or len(frame_data) < 100:
                         continue
-                    frame_count += 1
-                    if SOCKET_EMIT_EVERY_N > 1 and (frame_count % SOCKET_EMIT_EVERY_N != 0):
+                    
+                    if stream_id not in frame_count:
+                        frame_count[stream_id] = 0
+                    
+                    frame_count[stream_id] += 1
+                    if SOCKET_EMIT_EVERY_N > 1 and (frame_count[stream_id] % SOCKET_EMIT_EVERY_N != 0):
                         continue
 
                     now_ts = time.time()
-                    if now_ts - last_frame_emit_ts < (1.0 / SOCKET_STREAM_TARGET_FPS):
+                    if stream_id not in last_frame_emit_ts:
+                        last_frame_emit_ts[stream_id] = 0.0
+                    
+                    if now_ts - last_frame_emit_ts[stream_id] < (1.0 / SOCKET_STREAM_TARGET_FPS):
                         continue
-                    last_frame_emit_ts = now_ts
+                    last_frame_emit_ts[stream_id] = now_ts
 
-                    if frame_count % 30 == 0:
-                        print(f"[Monitor] Emitted frame #{frame_count}")
+                    if frame_count[stream_id] % 30 == 0:
+                        print(f"[Monitor] Emitted {stream_id} frame #{frame_count[stream_id]}")
 
                     try:
+                        # Emit with stream_id identifier so frontend knows which camera feed it is
                         socketio_instance.emit('frame', {
                             'frame': frame_data,
+                            'stream_id': stream_id,  # "front" or "back"
                             'ts': int(now_ts * 1000)
                         }, namespace='/')
+                        
+                        # Legacy support
                         if EMIT_LEGACY_MONITORING_FRAME:
-                            socketio_instance.emit('video_frame', {'frame': f'data:image/jpeg;base64,{frame_data}'}, namespace='/monitoring')
+                            socketio_instance.emit('video_frame', {
+                                'frame': f'data:image/jpeg;base64,{frame_data}',
+                                'stream_id': stream_id
+                            }, namespace='/monitoring')
                     except Exception as e:
-                        print(f"Error emitting frame: {e}")
+                        print(f"Error emitting frame ({stream_id}): {e}")
 
                 elif line.startswith('ALERT:'):
                     raw_payload = line[6:]
@@ -636,6 +659,19 @@ def start_monitoring():
             if not camera_source:
                 camera_source = None
 
+        # Dual camera support
+        front_camera_source = data.get('front_camera_source')
+        if front_camera_source is not None:
+            front_camera_source = str(front_camera_source).strip()
+            if not front_camera_source:
+                front_camera_source = None
+        
+        back_camera_source = data.get('back_camera_source')
+        if back_camera_source is not None:
+            back_camera_source = str(back_camera_source).strip()
+            if not back_camera_source:
+                back_camera_source = None
+
         raw_camera_mode = data.get('camera_mode')
         if raw_camera_mode is None:
             raw_camera_mode = os.environ.get('MONITOR_CAMERA_MODE', 'external')
@@ -662,6 +698,8 @@ def start_monitoring():
 
         effective_camera_source = str(effective_camera_source).strip() or '0'
         effective_camera_backend = str(effective_camera_backend).strip().lower() or 'auto'
+        effective_front_camera_source = front_camera_source or effective_camera_source
+        effective_back_camera_source = back_camera_source or os.environ.get('BACK_CAMERA_SOURCE', '').strip() or None
 
         if not session_id:
             return jsonify({'error': 'session_id is required'}), 400
@@ -691,9 +729,12 @@ def start_monitoring():
         session_model.update_session(session_id, {'is_active': True})
 
         server_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        
+        # Always use monitor.py (supports dual camera + full YOLO/MediaPipe detection)
+        use_dual_mode = effective_back_camera_source is not None
         monitor_script = os.path.join(server_dir, 'monitor.py')
         if not os.path.exists(monitor_script):
-            return jsonify({'error': f'monitor.py not found at {monitor_script}'}), 404
+            return jsonify({'error': f'{os.path.basename(monitor_script)} not found at {monitor_script}'}), 404
 
         session_name = session.get('name') or 'session'
         safe_session_name = ''.join(
@@ -702,21 +743,35 @@ def start_monitoring():
         ).strip('-') or 'session'
         session_folder = f"{safe_session_name}-{datetime.now().strftime('%Y-%m-%d')}"
 
+        # Prepare environment variables for dual mode
+        env_vars = {
+            **os.environ,
+            'PYTHONUNBUFFERED': '1',
+            'PYTHONIOENCODING': 'utf-8',
+            'TQDM_DISABLE': '1',
+            'EXAM_SESSION_FOLDER': session_folder,
+            'MONITOR_CAMERA_SOURCE': effective_camera_source,
+            'MONITOR_CAMERA_BACKEND': effective_camera_backend,
+            'MONITOR_CAMERA_MODE': camera_mode,
+        }
+        
+        if use_dual_mode:
+            env_vars['FRONT_CAMERA_SOURCE'] = str(effective_front_camera_source)
+            env_vars['BACK_CAMERA_SOURCE'] = str(effective_back_camera_source)
+            env_vars['CAMERA_BACKEND'] = effective_camera_backend
+            print(f"[Monitoring] Dual camera mode: FRONT={effective_front_camera_source}, BACK={effective_back_camera_source}")
+        else:
+            print(f"[Monitoring] Single camera mode: {effective_camera_source}")
+
         current_process = subprocess.Popen(
             [sys.executable, '-u', monitor_script],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            universal_newlines=True,
+            encoding='utf-8',
+            errors='replace',
             bufsize=1,
             cwd=os.path.dirname(monitor_script),
-            env={
-                **os.environ,
-                'PYTHONUNBUFFERED': '1',
-                'EXAM_SESSION_FOLDER': session_folder,
-                'MONITOR_CAMERA_SOURCE': effective_camera_source,
-                'MONITOR_CAMERA_BACKEND': effective_camera_backend,
-                'MONITOR_CAMERA_MODE': camera_mode,
-            }
+            env=env_vars
         )
 
         print(f"Monitor started PID={current_process.pid}")
@@ -735,7 +790,9 @@ def start_monitoring():
             'message': 'Monitoring started',
             'pid': current_process.pid,
             'session_id': session_id,
-            'camera_source': effective_camera_source,
+            'dual_camera_mode': use_dual_mode,
+            'front_camera_source': effective_front_camera_source,
+            'back_camera_source': effective_back_camera_source if use_dual_mode else None,
             'camera_mode': camera_mode,
         }), 200
 

@@ -4,6 +4,7 @@ import Button from '../../components/ui/Button';
 import LoadingSpinner from '../../components/ui/LoadingSpinner';
 import adminService from '../../api/services/adminService';
 import socketService from '../../utils/socket';
+import DualVideoFeed from '../../components/monitoring/DualVideoFeed';
 import { useNotificationActions } from '../../context/notification/NotificationContext';
 
 function AdminLiveSessions() {
@@ -27,10 +28,7 @@ function AdminLiveSessions() {
 
   const { showSuccess, showError } = useNotificationActions();
 
-  const videoImgRef = useRef(null);
-  const latestFrameRef = useRef(null);
-  const latestFrameTsRef = useRef(null);
-  const renderScheduledRef = useRef(false);
+  const dualVideoFeedRef = useRef(null);
   const receivedFramesRef = useRef(0);
   const lastStatsUpdateRef = useRef(0);
   const prevFramesRef = useRef(0);
@@ -86,21 +84,21 @@ function AdminLiveSessions() {
   const handleFrame = useCallback((data) => {
     const frameData = typeof data === 'string' ? data : data?.frame;
     const frameTs = typeof data === 'object' ? data?.ts : null;
+    const streamId = data?.stream_id || 'front';
+
     if (frameData && typeof frameData === 'string' && frameData.length > 100) {
-      latestFrameRef.current = frameData;
-      latestFrameTsRef.current = Number.isFinite(frameTs) ? frameTs : null;
+      dualVideoFeedRef.current?.handleFrame?.({
+        frame: frameData,
+        stream_id: streamId,
+        ts: frameTs,
+      });
       receivedFramesRef.current += 1;
-      if (!renderScheduledRef.current) {
-        renderScheduledRef.current = true;
-        requestAnimationFrame(() => {
-          if (videoImgRef.current && latestFrameRef.current)
-            videoImgRef.current.src = `data:image/jpeg;base64,${latestFrameRef.current}`;
-          if (latestFrameTsRef.current)
-            setStreamLatencyMs(Math.max(0, Date.now() - latestFrameTsRef.current));
-          renderScheduledRef.current = false;
-        });
+
+      if (Number.isFinite(frameTs)) {
+        setStreamLatencyMs(Math.max(0, Date.now() - frameTs));
       }
     }
+
     const now = Date.now();
     if (!hasFrame) setHasFrame(true);
     if (now - lastStatsUpdateRef.current >= 1000) {
@@ -396,39 +394,30 @@ function AdminLiveSessions() {
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
                     </svg>
                   </div>
-                  <span className="text-sm font-bold text-gray-800 dark:text-white">Video Feed</span>
+                  <span className="text-sm font-bold text-gray-800 dark:text-white">Live Feeds</span>
                 </div>
-                {hasFrame && <span className="text-[11px] font-semibold px-2.5 py-1 rounded-full bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400">Streaming</span>}
+                {hasFrame && (
+                  <span className="text-[11px] font-semibold px-2.5 py-1 rounded-full bg-emerald-50 dark:bg-emerald-950/30 text-emerald-700 dark:text-emerald-400">
+                    Streaming
+                  </span>
+                )}
               </div>
               <div className="p-2.5">
-                <div className="relative w-full bg-gray-950 rounded-xl overflow-hidden aspect-video flex items-center justify-center min-h-[260px] sm:min-h-[340px] lg:min-h-[420px]">
-                  {hasFrame ? (
-                    <img ref={videoImgRef} src="" alt="Live feed" className="block w-full h-full object-contain rounded-xl" />
-                  ) : (
-                    <div className="text-center p-6 flex flex-col items-center justify-center w-full h-full relative">
-                      {isMonitoring && !hasFrame ? (
-                        <div className="flex flex-col items-center opacity-70">
-                          <div className="w-16 h-16 mb-4 rounded-2xl bg-gray-800/80 flex items-center justify-center border border-gray-700 shadow-inner">
-                            <svg className="w-8 h-8 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                            </svg>
-                          </div>
-                          <p className="text-gray-400 text-sm font-medium tracking-wide">Initializing stream...</p>
-                          <p className="text-gray-500 text-xs mt-2">Boot Time: {formatDuration(bootElapsedSec)}</p>
-                        </div>
-                      ) : (
-                        <div className="flex flex-col items-center opacity-70">
-                          <div className="w-16 h-16 mb-4 rounded-2xl bg-gray-800/80 flex items-center justify-center border border-gray-700 shadow-inner">
-                            <svg className="w-8 h-8 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                            </svg>
-                          </div>
-                          <p className="text-gray-400 text-sm font-medium tracking-wide">No active monitoring</p>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
+                <DualVideoFeed
+                  ref={dualVideoFeedRef}
+                  isMonitoring={isMonitoring}
+                  hasFrame={hasFrame}
+                  streamFps={streamFps}
+                  streamLatencyMs={streamLatencyMs}
+                  lastFrameAt={lastFrameAt}
+                  showStats={true}
+                  darkMode={true}
+                />
+                {isMonitoring && !hasFrame && (
+                  <p className="text-center text-gray-500 text-xs mt-2">
+                    Initializing stream… Boot time: {formatDuration(bootElapsedSec)}
+                  </p>
+                )}
               </div>
             </div>
           </div>
